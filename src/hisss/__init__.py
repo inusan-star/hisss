@@ -15,6 +15,7 @@ from hisss.game.rewards import (
     KillBattleSnakeRewardConfig,
     StandardBattleSnakeRewardConfig,
 )
+from hisss.game.seed import set_seed
 from hisss.game.mask import get_safe_moves
 
 ACTION_TO_STR = {UP: "up", RIGHT: "right", DOWN: "down", LEFT: "left"}
@@ -37,6 +38,7 @@ __all__ = [
     "BattleSnakeEncodingConfig",
     "calculate_nash_equilibrium",
     "to_battlesnake_json",
+    "set_seed",
     "get_safe_moves",
     "ACTION_TO_STR",
 ]
