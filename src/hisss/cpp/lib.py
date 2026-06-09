@@ -5,9 +5,19 @@ from typing import Tuple
 
 import numpy as np
 
-from hisss.game.battlesnake import UP, RIGHT, DOWN, LEFT
-
 file_path = Path(__file__)
+
+#: Constant representing the UP-direction in the Grid world
+UP: int = 0
+
+#: Constant representing the RIGHT-direction in the Grid world
+RIGHT: int = 1
+
+#: Constant representing the DOWN-direction in the Grid world
+DOWN: int = 2
+
+#: Constant representing the LEFT-direction in the Grid world
+LEFT: int = 3
 
 
 def _find_library() -> Path:
