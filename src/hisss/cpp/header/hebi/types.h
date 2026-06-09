@@ -186,7 +186,59 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Point, x, y)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Food, x, y, spawn_turn)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(EliminationEvent, cause, turn, by)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(SnakeCustomizations, color, head, tail)
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Snake, id, name, length, latency, squad, health, head, body, customizations, elimination_event)
+
+inline void to_json(nlohmann::json& j, const Snake& s) {
+  j = nlohmann::json{{"id", s.id},
+                     {"name", s.name},
+                     {"length", s.length},
+                     {"latency", s.latency},
+                     {"squad", s.squad},
+                     {"health", s.health},
+                     {"head", s.head},
+                     {"body", s.body},
+                     {"customizations", s.customizations},
+                     {"elimination_event", s.elimination_event}};
+}
+
+inline void from_json(const nlohmann::json& j, Snake& s) {
+  j.at("id").get_to(s.id);
+  j.at("name").get_to(s.name);
+  j.at("length").get_to(s.length);
+  if (j.contains("latency") && !j["latency"].is_null()) j.at("latency").get_to(s.latency);
+  if (j.contains("squad") && !j["squad"].is_null()) j.at("squad").get_to(s.squad);
+  if (j.contains("health") && !j["health"].is_null()) j.at("health").get_to(s.health);
+
+  if (j.contains("head") && !j["head"].is_null()) {
+    j.at("head").get_to(s.head);
+    if (s.head.has_value() && s.head.value().x == -1 && s.head.value().y == -1) {
+      s.head = std::nullopt;
+    }
+  } else {
+    s.head = std::nullopt;
+  }
+
+  j.at("body").get_to(s.body);
+  for (auto& segment : s.body) {
+    if (segment.has_value() && segment.value().x == -1 && segment.value().y == -1) {
+      segment = std::nullopt;
+    }
+  }
+
+  if (s.body.empty()) {
+    s.head = std::nullopt;
+  }
+
+  j.at("customizations").get_to(s.customizations);
+
+  if (j.contains("elimination_event") && !j["elimination_event"].is_null()) {
+    j.at("elimination_event").get_to(s.elimination_event);
+  } else if (j.contains("elimination") && !j["elimination"].is_null()) {
+    j.at("elimination").get_to(s.elimination_event);
+  } else {
+    s.elimination_event = std::nullopt;
+  }
+}
+
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(RoyaleSettings, shrinkEveryNTurns)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(SquadSettings, allowBodyCollisions, sharedElimination, sharedHealth, sharedLength)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(RulesetSettings, foodSpawnChance, hazardDamagePerTurn, minimumFood, viewRadius, royale, squad)

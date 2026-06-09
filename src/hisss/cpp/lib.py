@@ -5,6 +5,8 @@ from typing import Tuple
 
 import numpy as np
 
+from hisss.game.battlesnake import UP, RIGHT, DOWN, LEFT
+
 file_path = Path(__file__)
 
 
@@ -73,9 +75,7 @@ class CPPLibrary:
         self.lib.actions_cpp.argtypes = [
             ct.POINTER(Struct),
             ct.c_int,
-            np.ctypeslib.ndpointer(
-                dtype=ct.c_int, ndim=1, shape=(4,), flags="C_CONTIGUOUS"
-            ),
+            np.ctypeslib.ndpointer(dtype=ct.c_int, ndim=1, shape=(4,), flags="C_CONTIGUOUS"),
         ]
         self.lib.equals_cpp.argtypes = [
             ct.POINTER(Struct),
@@ -199,6 +199,12 @@ class CPPLibrary:
             ct.POINTER(ct.c_int8),
         ]
 
+        self.lib.get_safe_moves_cpp.argtypes = [
+            ct.c_char_p,
+            ct.POINTER(ct.c_bool),
+        ]
+        self.lib.get_safe_moves_cpp.restype = None
+
     def get_area_control(
         self,
         num_snakes: int,
@@ -245,33 +251,23 @@ class CPPLibrary:
 
     def compute_nash(
         self,
-        available_actions: list[
-            list[int]
-        ],  # maps player(index of player_at_turn) to available actions
+        available_actions: list[list[int]],  # maps player(index of player_at_turn) to available actions
         joint_action_list: list[tuple[int, ...]],
         joint_action_value_arr: np.ndarray,  # shape (num_joint_actions, num_player_at_turn)
         error_counter=None,  # mp.Array
     ) -> tuple[list[float], list[np.ndarray]]:
         # number of players and actions
         num_player = len(available_actions)
-        num_available_actions = np.asarray(
-            [len(available_actions[p]) for p in range(num_player)], dtype=ct.c_int
-        )
-        num_available_actions_p = num_available_actions.ctypes.data_as(
-            ct.POINTER(ct.c_int)
-        )
+        num_available_actions = np.asarray([len(available_actions[p]) for p in range(num_player)], dtype=ct.c_int)
+        num_available_actions_p = num_available_actions.ctypes.data_as(ct.POINTER(ct.c_int))
         # available actions
         flat_action_list = [a for sublist in available_actions for a in sublist]
         available_actions_arr = np.asarray(flat_action_list, dtype=ct.c_int)
         available_actions_p = available_actions_arr.ctypes.data_as(ct.POINTER(ct.c_int))
         joint_actions_arr = np.asarray(joint_action_list, dtype=ct.c_int).flatten()
         joint_actions_p = joint_actions_arr.ctypes.data_as(ct.POINTER(ct.c_int))
-        joint_action_value_arr_flat = joint_action_value_arr.astype(
-            ct.c_double
-        ).flatten()
-        joint_action_value_p = joint_action_value_arr_flat.ctypes.data_as(
-            ct.POINTER(ct.c_double)
-        )
+        joint_action_value_arr_flat = joint_action_value_arr.astype(ct.c_double).flatten()
+        joint_action_value_p = joint_action_value_arr_flat.ctypes.data_as(ct.POINTER(ct.c_double))
         # result arrays
         result_values = np.zeros(shape=(num_player,), dtype=ct.c_double)
         result_values_p = result_values.ctypes.data_as(ct.POINTER(ct.c_double))
@@ -297,9 +293,7 @@ class CPPLibrary:
             value_list = list(avg_values)
             result_policy_list = []
             for aa in available_actions:
-                result_policy_list.append(
-                    np.ones(shape=(len(aa),), dtype=ct.c_float) / len(aa)
-                )
+                result_policy_list.append(np.ones(shape=(len(aa),), dtype=ct.c_float) / len(aa))
         else:
             value_list = list(result_values)
             result_policy_list = []
@@ -309,6 +303,15 @@ class CPPLibrary:
                 result_policy_list.append(result_policies[start_idx:end_idx])
                 start_idx = end_idx
         return value_list, result_policy_list
+
+    def get_safe_moves(self, state_json: str) -> list[int]:
+        """Returns a list of safe actions as integer constants."""
+        safe_arr = np.zeros(shape=(4,), dtype=ct.c_bool)
+        safe_p = safe_arr.ctypes.data_as(ct.POINTER(ct.c_bool))
+
+        self.lib.get_safe_moves_cpp(state_json.encode("utf-8"), safe_p)
+
+        return [d for d in (UP, RIGHT, DOWN, LEFT) if safe_arr[d]]
 
 
 CPP_LIB = CPPLibrary()
