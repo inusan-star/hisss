@@ -63,7 +63,7 @@ void StateProcessor::encode_features(float* features_out) const {
   int plane_size = BOARD_SIZE * BOARD_SIZE;
 
   // Reset output array.
-  std::fill(features_out, features_out + 9 * plane_size, 0.0f);
+  std::fill(features_out, features_out + 8 * plane_size, 0.0f);
 
   // Abort if the player is eliminated.
   if (game_state_.you.elimination_event.has_value()) {
@@ -128,20 +128,20 @@ void StateProcessor::encode_features(float* features_out) const {
     set_features(6, food.x, food.y, 1.0f);
   }
 
-  // Channel-7: Visibility
-  for (int y = 0; y < BOARD_SIZE; ++y) {
-    for (int x = 0; x < BOARD_SIZE; ++x) {
-      if (is_visible(x, y)) {
-        set_features(7, x, y, 1.0f);
-      }
-    }
-  }
-
-  // Channel-8: You Health
+  // Channel-7: You Health
   float health_val = static_cast<float>(game_state_.you.health.value_or(0)) / 100.0f;
   for (int y = 0; y < BOARD_SIZE; ++y) {
     for (int x = 0; x < BOARD_SIZE; ++x) {
-      set_features(8, x, y, health_val);
+      set_features(7, x, y, health_val);
+    }
+  }
+
+  // Channel-8: Visibility
+  for (int y = 0; y < BOARD_SIZE; ++y) {
+    for (int x = 0; x < BOARD_SIZE; ++x) {
+      if (is_visible(x, y)) {
+        set_features(8, x, y, 1.0f);
+      }
     }
   }
 }
