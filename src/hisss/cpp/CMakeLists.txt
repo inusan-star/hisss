@@ -23,7 +23,7 @@ set(PROJECT_SOURCES
     source/utils.cpp
     source/nash.cpp
     source/link.cpp
-    source/hebi/mask.cpp
+    source/hebi/processor.cpp
 )
 
 add_library(link SHARED ${PROJECT_SOURCES} ${ALGLIB_SOURCES})

@@ -209,11 +209,15 @@ class CPPLibrary:
             ct.POINTER(ct.c_int8),
         ]
 
-        self.lib.get_safe_moves_cpp.argtypes = [
+        self.lib.get_board_size_cpp.argtypes = []
+        self.lib.get_board_size_cpp.restype = ct.c_int
+
+        self.lib.process_state_cpp.argtypes = [
             ct.c_char_p,
             ct.POINTER(ct.c_bool),
+            ct.POINTER(ct.c_float),
         ]
-        self.lib.get_safe_moves_cpp.restype = None
+        self.lib.process_state_cpp.restype = None
 
     def get_area_control(
         self,
@@ -314,14 +318,32 @@ class CPPLibrary:
                 start_idx = end_idx
         return value_list, result_policy_list
 
-    def get_safe_moves(self, state_json: str) -> list[int]:
-        """Returns a list of safe actions as integer constants."""
-        safe_arr = np.zeros(shape=(4,), dtype=ct.c_bool)
-        safe_p = safe_arr.ctypes.data_as(ct.POINTER(ct.c_bool))
+    def process_state(
+        self,
+        state_json: str,
+        features_flag: bool = False,
+    ) -> list[int] | tuple[list[int], np.ndarray]:
+        """Processes the game state."""
+        safe_moves_arr = np.zeros(shape=(4,), dtype=ct.c_bool)
+        safe_moves_p = safe_moves_arr.ctypes.data_as(ct.POINTER(ct.c_bool))
 
-        self.lib.get_safe_moves_cpp(state_json.encode("utf-8"), safe_p)
+        features_out = None
+        features_p = None
 
-        return [d for d in (UP, RIGHT, DOWN, LEFT) if safe_arr[d]]
+        if features_flag:
+            board_size = self.lib.get_board_size_cpp()
+            features_out = np.zeros((9, board_size, board_size), dtype=np.float32)
+            features_p = features_out.ctypes.data_as(ct.POINTER(ct.c_float))
+
+        self.lib.process_state_cpp(state_json.encode("utf-8"), safe_moves_p, features_p)
+
+        moves = [d for d in (UP, RIGHT, DOWN, LEFT) if safe_moves_arr[d]]
+
+        if features_flag:
+            assert features_out is not None
+            return moves, features_out
+
+        return moves
 
 
 CPP_LIB = CPPLibrary()
