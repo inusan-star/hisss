@@ -63,7 +63,7 @@ void StateProcessor::encode_features(float* features_out) const {
   int plane_size = BOARD_SIZE * BOARD_SIZE;
 
   // Reset output array.
-  std::fill(features_out, features_out + 8 * plane_size, 0.0f);
+  std::fill(features_out, features_out + 9 * plane_size, 0.0f);
 
   // Abort if the player is eliminated.
   if (game_state_.you.elimination_event.has_value()) {
