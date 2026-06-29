@@ -7,18 +7,6 @@ import numpy as np
 
 file_path = Path(__file__)
 
-#: Constant representing the UP-direction in the Grid world
-UP: int = 0
-
-#: Constant representing the RIGHT-direction in the Grid world
-RIGHT: int = 1
-
-#: Constant representing the DOWN-direction in the Grid world
-DOWN: int = 2
-
-#: Constant representing the LEFT-direction in the Grid world
-LEFT: int = 3
-
 
 def _find_library() -> Path:
     compiled_dir = file_path.parent
@@ -322,10 +310,10 @@ class CPPLibrary:
         self,
         state_json: str,
         features_flag: bool = False,
-    ) -> list[int] | tuple[list[int], np.ndarray]:
+    ) -> np.ndarray | tuple[np.ndarray, np.ndarray]:
         """Processes the game state."""
-        safe_moves_arr = np.zeros(shape=(4,), dtype=ct.c_bool)
-        safe_moves_p = safe_moves_arr.ctypes.data_as(ct.POINTER(ct.c_bool))
+        safe_moves_out = np.zeros(shape=(4,), dtype=bool)
+        safe_moves_p = safe_moves_out.ctypes.data_as(ct.POINTER(ct.c_bool))
 
         features_out = None
         features_p = None
@@ -337,13 +325,11 @@ class CPPLibrary:
 
         self.lib.process_state_cpp(state_json.encode("utf-8"), safe_moves_p, features_p)
 
-        moves = [d for d in (UP, RIGHT, DOWN, LEFT) if safe_moves_arr[d]]
-
         if features_flag:
             assert features_out is not None
-            return moves, features_out
+            return safe_moves_out, features_out
 
-        return moves
+        return safe_moves_out
 
 
 CPP_LIB = CPPLibrary()
