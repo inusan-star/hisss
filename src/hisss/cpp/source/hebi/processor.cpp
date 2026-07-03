@@ -33,7 +33,11 @@ void StateProcessor::extract_safe_moves(bool* safe_moves_out) const {
     }
 
     // Mark body segments as obstacles.
-    int check_len = snake.body.size() > 1 ? snake.body.size() - 1 : snake.body.size();
+    int body_size = static_cast<int>(snake.body.size());
+    bool is_you = (snake.id == game_state_.you.id);
+    bool is_stacked = is_you && (body_size < snake.length);
+    int check_len = (!is_stacked && body_size > 1) ? body_size - 1 : body_size;
+
     for (int i = 0; i < check_len; ++i) {
       if (snake.body[i].has_value()) {
         hebi::Point p = snake.body[i].value();
