@@ -122,7 +122,7 @@ void StateProcessor::extract_safe_moves(bool* safe_moves_out) const {
     }
   }
 
-  // Restore longest surviving move if trapped.
+  // Restore longest surviving move.
   if (!any_safe) {
     int max_reachable = -1;
 
