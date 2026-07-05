@@ -17,7 +17,7 @@ void StateProcessor::extract_safe_moves(bool* safe_moves_out) const {
     safe_moves_out[i] = false;
   }
 
-  // Abort if dead.
+  // Abort if the player is eliminated.
   if (game_state_.you.elimination_event.has_value()) {
     return;
   }
@@ -26,7 +26,7 @@ void StateProcessor::extract_safe_moves(bool* safe_moves_out) const {
 
   // Init obstacle map.
   std::vector<std::vector<bool>> obstacles(BOARD_SIZE, std::vector<bool>(BOARD_SIZE, false));
-  std::vector<std::vector<int>> clear_time_grid(BOARD_SIZE, std::vector<int>(BOARD_SIZE, 0));
+  std::vector<std::vector<int>> self_clear_time_grid(BOARD_SIZE, std::vector<int>(BOARD_SIZE, 0));
 
   // Process all snakes.
   for (const auto& snake : game_state_.board.snakes) {
@@ -48,18 +48,9 @@ void StateProcessor::extract_safe_moves(bool* safe_moves_out) const {
 
         if (p.x >= 0 && p.x < BOARD_SIZE && p.y >= 0 && p.y < BOARD_SIZE) {
           obstacles[p.y][p.x] = true;
-        }
-      }
-    }
 
-    for (int b = 0; b < body_size; ++b) {
-      if (snake.body[b].has_value()) {
-        hebi::Point p = snake.body[b].value();
-
-        if (p.x >= 0 && p.x < BOARD_SIZE && p.y >= 0 && p.y < BOARD_SIZE) {
-          int turns_to_clear = body_size - b;
-          if (turns_to_clear > clear_time_grid[p.y][p.x]) {
-            clear_time_grid[p.y][p.x] = turns_to_clear;
+          if (snake.id == game_state_.you.id) {
+            self_clear_time_grid[p.y][p.x] = snake.length - i;
           }
         }
       }
@@ -109,10 +100,10 @@ void StateProcessor::extract_safe_moves(bool* safe_moves_out) const {
 
           // Check grid bounds.
           if (fx >= 0 && fx < BOARD_SIZE && fy >= 0 && fy < BOARD_SIZE && visited[fy][fx] != visit_id) {
-            bool time_blocked = (current_step < clear_time_grid[fy][fx]);
+            bool time_blocked = (current_step < self_clear_time_grid[fy][fx]);
 
             // Push unvisited space.
-            if (!time_blocked && !obstacles[fy][fx]) {
+            if (!time_blocked) {
               visited[fy][fx] = visit_id;
               step_grid[fy][fx] = current_step + 1;
               queue.push_back({fx, fy});
@@ -134,11 +125,13 @@ void StateProcessor::extract_safe_moves(bool* safe_moves_out) const {
   // Restore longest surviving move if trapped.
   if (!any_safe) {
     int max_reachable = -1;
+
     for (int i = 0; i < 4; ++i) {
       if (immediate_safe[i] && reachable_counts[i] > max_reachable) {
         max_reachable = reachable_counts[i];
       }
     }
+
     if (max_reachable >= 0) {
       for (int i = 0; i < 4; ++i) {
         if (immediate_safe[i] && reachable_counts[i] == max_reachable) {
