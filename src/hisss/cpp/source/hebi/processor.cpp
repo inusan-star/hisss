@@ -27,6 +27,7 @@ void StateProcessor::extract_safe_moves(bool* safe_moves_out) const {
   // Init obstacle map.
   std::vector<std::vector<bool>> obstacles(BOARD_SIZE, std::vector<bool>(BOARD_SIZE, false));
   std::vector<std::vector<int>> self_clear_time_grid(BOARD_SIZE, std::vector<int>(BOARD_SIZE, 0));
+  bool is_enemy_tail[4] = {false, false, false, false};
 
   // Process all snakes.
   for (const auto& snake : game_state_.board.snakes) {
@@ -39,7 +40,10 @@ void StateProcessor::extract_safe_moves(bool* safe_moves_out) const {
     bool is_stacked = (body_size < snake.length);
 
     // Determine tail persistence.
-    int check_len = (!is_stacked && body_size > 1) ? body_size - 1 : body_size;
+    int check_len = body_size;
+    if (snake.id == game_state_.you.id && (!is_stacked && body_size > 1)) {
+      check_len = body_size - 1;
+    }
 
     // Mark body obstacles.
     for (int i = 0; i < check_len; ++i) {
@@ -51,6 +55,13 @@ void StateProcessor::extract_safe_moves(bool* safe_moves_out) const {
 
           if (snake.id == game_state_.you.id) {
             self_clear_time_grid[p.y][p.x] = snake.length - i;
+
+          } else if (i == body_size - 1 && snake.body[body_size - 1].has_value()) {
+            for (int d = 0; d < 4; ++d) {
+              if (head.x + hebi::dx(static_cast<hebi::Direction>(d)) == p.x && head.y + hebi::dy(static_cast<hebi::Direction>(d)) == p.y) {
+                is_enemy_tail[d] = true;
+              }
+            }
           }
         }
       }
@@ -65,7 +76,6 @@ void StateProcessor::extract_safe_moves(bool* safe_moves_out) const {
   int visit_id = 0;
 
   bool immediate_safe[4] = {false, false, false, false};
-  int reachable_counts[4] = {0, 0, 0, 0};
   bool any_safe = false;
 
   // Eval each move direction.
@@ -112,8 +122,6 @@ void StateProcessor::extract_safe_moves(bool* safe_moves_out) const {
         }
       }
 
-      reachable_counts[i] = reachable_count;
-
       // Confirm safe space.
       if (reachable_count >= game_state_.you.length) {
         safe_moves_out[i] = true;
@@ -122,19 +130,20 @@ void StateProcessor::extract_safe_moves(bool* safe_moves_out) const {
     }
   }
 
-  // Restore longest surviving move.
+  // Restore fallback moves.
   if (!any_safe) {
-    int max_reachable = -1;
+    bool enemy_tail_found = false;
 
     for (int i = 0; i < 4; ++i) {
-      if (immediate_safe[i] && reachable_counts[i] > max_reachable) {
-        max_reachable = reachable_counts[i];
+      if (is_enemy_tail[i]) {
+        safe_moves_out[i] = true;
+        enemy_tail_found = true;
       }
     }
 
-    if (max_reachable >= 0) {
+    if (!enemy_tail_found) {
       for (int i = 0; i < 4; ++i) {
-        if (immediate_safe[i] && reachable_counts[i] == max_reachable) {
+        if (immediate_safe[i]) {
           safe_moves_out[i] = true;
         }
       }
