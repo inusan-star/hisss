@@ -23,7 +23,10 @@ set(PROJECT_SOURCES
     source/utils.cpp
     source/nash.cpp
     source/link.cpp
+    source/hebi/classical.cpp
     source/hebi/processor.cpp
+    source/hebi/extract_safe_moves.cpp
+    source/hebi/encode_policy_features.cpp
 )
 
 add_library(link SHARED ${PROJECT_SOURCES} ${ALGLIB_SOURCES})

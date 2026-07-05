@@ -197,6 +197,21 @@ class CPPLibrary:
             ct.POINTER(ct.c_int8),
         ]
 
+        self.lib.create_classical_agent_cpp.argtypes = []
+        self.lib.create_classical_agent_cpp.restype = ct.c_void_p
+
+        self.lib.destroy_classical_agent_cpp.argtypes = [ct.c_void_p]
+        self.lib.destroy_classical_agent_cpp.restype = None
+
+        self.lib.start_classical_agent_cpp.argtypes = [ct.c_void_p, ct.c_char_p]
+        self.lib.start_classical_agent_cpp.restype = None
+
+        self.lib.move_classical_agent_cpp.argtypes = [ct.c_void_p, ct.c_char_p]
+        self.lib.move_classical_agent_cpp.restype = ct.c_int
+
+        self.lib.end_classical_agent_cpp.argtypes = [ct.c_void_p, ct.c_char_p]
+        self.lib.end_classical_agent_cpp.restype = None
+
         self.lib.get_board_size_cpp.argtypes = []
         self.lib.get_board_size_cpp.restype = ct.c_int
 
