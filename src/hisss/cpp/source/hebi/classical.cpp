@@ -3,8 +3,6 @@
 #include <algorithm>
 #include <vector>
 
-#include "../../header/hebi/processor.h"
-
 namespace hebi {
 
 ClassicalAgent::ClassicalAgent() : turn_(0), rng_(42) {}
