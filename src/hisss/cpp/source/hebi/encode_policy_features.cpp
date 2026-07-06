@@ -56,16 +56,14 @@ void StateProcessor::encode_policy_features(float* features_out) const {
       if (!snake.body[i].has_value()) continue;
       hebi::Point p = snake.body[i].value();
 
-      if (is_visible(p.x, p.y)) {
-        if (i == 0) {
-          set_features(3, p.x, p.y, 1.0f);
-        }
-        if (i > 0 && i < body_len - 1) {
-          set_features(4, p.x, p.y, 1.0f);
-        }
-        if (i == body_len - 1) {
-          set_features(5, p.x, p.y, 1.0f);
-        }
+      if (i == 0) {
+        set_features(3, p.x, p.y, 1.0f);
+      }
+      if (i > 0 && i < body_len - 1) {
+        set_features(4, p.x, p.y, 1.0f);
+      }
+      if (i == body_len - 1) {
+        set_features(5, p.x, p.y, 1.0f);
       }
     }
   }
