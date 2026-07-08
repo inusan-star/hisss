@@ -217,7 +217,9 @@ class CPPLibrary:
 
         self.lib.process_state_cpp.argtypes = [
             ct.c_char_p,
+            ct.c_char_p,
             ct.POINTER(ct.c_bool),
+            ct.POINTER(ct.c_float),
             ct.POINTER(ct.c_float),
         ]
         self.lib.process_state_cpp.restype = None
@@ -323,26 +325,41 @@ class CPPLibrary:
 
     def process_state(
         self,
-        state_json: str,
+        partial_state_json: str,
+        perfect_state_json: str | None = None,
         features_flag: bool = False,
-    ) -> np.ndarray | tuple[np.ndarray, np.ndarray]:
+    ) -> np.ndarray | tuple[np.ndarray, np.ndarray] | tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Processes the game state."""
         safe_moves_out = np.zeros(shape=(4,), dtype=bool)
         safe_moves_p = safe_moves_out.ctypes.data_as(ct.POINTER(ct.c_bool))
 
-        features_out = None
-        features_p = None
+        policy_features_out = None
+        policy_features_p = None
+        value_features_out = None
+        value_features_p = None
 
         if features_flag:
             board_size = self.lib.get_board_size_cpp()
-            features_out = np.zeros((9, board_size, board_size), dtype=np.float32)
-            features_p = features_out.ctypes.data_as(ct.POINTER(ct.c_float))
+            policy_features_out = np.zeros((9, board_size, board_size), dtype=np.float32)
+            policy_features_p = policy_features_out.ctypes.data_as(ct.POINTER(ct.c_float))
 
-        self.lib.process_state_cpp(state_json.encode("utf-8"), safe_moves_p, features_p)
+            if perfect_state_json is not None:
+                value_features_out = np.zeros((8, board_size, board_size), dtype=np.float32)
+                value_features_p = value_features_out.ctypes.data_as(ct.POINTER(ct.c_float))
+
+        partial_state_encoded = partial_state_json.encode("utf-8")
+        perfect_state_encoded = perfect_state_json.encode("utf-8") if perfect_state_json is not None else None
+
+        self.lib.process_state_cpp(partial_state_encoded, perfect_state_encoded, safe_moves_p, policy_features_p, value_features_p)
 
         if features_flag:
-            assert features_out is not None
-            return safe_moves_out, features_out
+            assert policy_features_out is not None
+
+            if perfect_state_json is not None:
+                assert value_features_out is not None
+                return safe_moves_out, policy_features_out, value_features_out
+
+            return safe_moves_out, policy_features_out
 
         return safe_moves_out
 

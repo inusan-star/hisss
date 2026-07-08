@@ -16,6 +16,7 @@ class StateProcessor {
 
   void extract_safe_moves(bool* safe_moves_out) const;
   void encode_policy_features(float* features_out) const;
+  void encode_value_features(float* features_out) const;
 
  private:
   hebi::GameState game_state_;
@@ -26,7 +27,8 @@ extern "C" {
 int get_board_size_cpp();
 
 // Process the game state.
-void process_state_cpp(const char* state_json, bool* safe_moves_out, float* features_out);
+void process_state_cpp(const char* partial_state_json, const char* perfect_state_json, bool* safe_moves_out, float* policy_features_out,
+                       float* value_features_out);
 }
 
 }  // namespace hebi
