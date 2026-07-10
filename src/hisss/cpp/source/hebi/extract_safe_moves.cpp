@@ -21,8 +21,11 @@ void StateProcessor::extract_safe_moves(bool* safe_moves_out) const {
 
   // Init obstacle map.
   std::vector<std::vector<bool>> obstacles(BOARD_SIZE, std::vector<bool>(BOARD_SIZE, false));
-  std::vector<std::vector<int>> self_clear_time_grid(BOARD_SIZE, std::vector<int>(BOARD_SIZE, 0));
+  std::vector<std::vector<int>> clear_time_grid(BOARD_SIZE, std::vector<int>(BOARD_SIZE, 0));
   bool is_enemy_tail[4] = {false, false, false, false};
+
+  // Visibility check helper.
+  auto is_visible = [&](int target_x, int target_y) { return std::max(std::abs(target_x - head.x), std::abs(target_y - head.y)) <= VIEW_RADIUS; };
 
   // Process all snakes.
   for (const auto& snake : game_state_.board.snakes) {
@@ -40,26 +43,70 @@ void StateProcessor::extract_safe_moves(bool* safe_moves_out) const {
       check_len = body_size - 1;
     }
 
+    int current_true_index = 0;
+    hebi::Point last_point = {-1, -1};
+    bool has_last_point = false;
+
     // Mark body obstacles.
     for (int i = 0; i < check_len; ++i) {
-      if (snake.body[i].has_value()) {
-        hebi::Point p = snake.body[i].value();
+      if (!snake.body[i].has_value()) {
+        continue;
+      }
 
-        if (p.x >= 0 && p.x < BOARD_SIZE && p.y >= 0 && p.y < BOARD_SIZE) {
-          obstacles[p.y][p.x] = true;
+      hebi::Point p = snake.body[i].value();
 
-          if (snake.id == game_state_.you.id) {
-            self_clear_time_grid[p.y][p.x] = snake.length - i;
+      if (has_last_point) {
+        int dist = std::abs(p.x - last_point.x) + std::abs(p.y - last_point.y);
 
-          } else if (i == body_size - 1 && snake.body[body_size - 1].has_value()) {
-            for (int d = 0; d < 4; ++d) {
-              if (head.x + hebi::dx(static_cast<hebi::Direction>(d)) == p.x && head.y + hebi::dy(static_cast<hebi::Direction>(d)) == p.y) {
-                is_enemy_tail[d] = true;
+        if (snake.id != game_state_.you.id && dist > 1) {
+          int cx = last_point.x;
+          int cy = last_point.y;
+
+          for (int step = 1; step < dist; ++step) {
+            current_true_index++;
+
+            if (cx < p.x)
+              cx++;
+
+            else if (cx > p.x)
+              cx--;
+
+            else if (cy < p.y)
+              cy++;
+
+            else if (cy > p.y)
+              cy--;
+
+            if (cx >= 0 && cx < BOARD_SIZE && cy >= 0 && cy < BOARD_SIZE) {
+              if (!is_visible(cx, cy)) {
+                obstacles[cy][cx] = true;
+                clear_time_grid[cy][cx] = std::max(clear_time_grid[cy][cx], snake.length - current_true_index);
               }
             }
           }
         }
+
+        current_true_index++;
+
+      } else {
+        current_true_index = i;
       }
+
+      if (p.x >= 0 && p.x < BOARD_SIZE && p.y >= 0 && p.y < BOARD_SIZE) {
+        obstacles[p.y][p.x] = true;
+        clear_time_grid[p.y][p.x] = std::max(clear_time_grid[p.y][p.x], snake.length - current_true_index);
+
+        if (snake.id != game_state_.you.id && i == body_size - 1 && snake.body[body_size - 1].has_value()) {
+          for (int d = 0; d < 4; ++d) {
+            if (head.x + hebi::dx(static_cast<hebi::Direction>(d)) == p.x && head.y + hebi::dy(static_cast<hebi::Direction>(d)) == p.y) {
+              is_enemy_tail[d] = true;
+            }
+          }
+        }
+      }
+
+      last_point = p;
+      has_last_point = true;
     }
   }
 
@@ -105,7 +152,7 @@ void StateProcessor::extract_safe_moves(bool* safe_moves_out) const {
 
           // Check grid bounds.
           if (fx >= 0 && fx < BOARD_SIZE && fy >= 0 && fy < BOARD_SIZE && visited[fy][fx] != visit_id) {
-            bool time_blocked = (current_step < self_clear_time_grid[fy][fx]);
+            bool time_blocked = (current_step < clear_time_grid[fy][fx]);
 
             // Push unvisited space.
             if (!time_blocked) {
