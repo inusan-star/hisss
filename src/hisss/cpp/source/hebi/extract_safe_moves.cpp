@@ -6,186 +6,356 @@
 
 namespace hebi {
 
+// Internal search state.
+struct SearchState {
+  hebi::Point position;
+  int food_eaten;
+};
+
+// Internal evaluation state.
+struct MoveEvaluation {
+  bool is_accessible;
+  bool is_space_sufficient;
+  bool is_enemy_head;
+  bool is_enemy_tail;
+  int reachable_max_space;
+};
+
 void StateProcessor::extract_safe_moves(bool* safe_moves_out) const {
   // Reset outputs.
   for (int i = 0; i < 4; ++i) {
     safe_moves_out[i] = false;
   }
 
-  // Abort if the player is eliminated.
+  // Elimination check.
   if (game_state_.you.elimination_event.has_value()) {
     return;
   }
 
-  hebi::Point head = game_state_.you.head.value();
+  const hebi::Point head = game_state_.you.head.value();
 
-  // Init obstacle map.
-  std::vector<std::vector<bool>> obstacles(BOARD_SIZE, std::vector<bool>(BOARD_SIZE, false));
-  std::vector<std::vector<int>> clear_time_grid(BOARD_SIZE, std::vector<int>(BOARD_SIZE, 0));
-  bool is_enemy_tail[4] = {false, false, false, false};
+  // Distance check helper.
+  auto get_distance = [](int source_x, int source_y, int dest_x, int dest_y) { return std::abs(source_x - dest_x) + std::abs(source_y - dest_y); };
+
+  // Bounds check helper.
+  auto is_in_bounds = [](int target_x, int target_y) { return target_x >= 0 && target_x < BOARD_SIZE && target_y >= 0 && target_y < BOARD_SIZE; };
 
   // Visibility check helper.
-  auto is_visible = [&](int target_x, int target_y) { return std::max(std::abs(target_x - head.x), std::abs(target_y - head.y)) <= VIEW_RADIUS; };
+  auto is_visible = [&](int target_x, int target_y) { return get_distance(target_x, target_y, head.x, head.y) <= VIEW_RADIUS; };
 
-  // Process all snakes.
+  // Grid layer initialization.
+  alignas(16) bool food_grid[BOARD_SIZE * BOARD_SIZE] = {false};
+  alignas(16) bool player_body_grid[BOARD_SIZE * BOARD_SIZE] = {false};
+  alignas(16) bool enemy_head_grid[BOARD_SIZE * BOARD_SIZE] = {false};
+  alignas(16) bool enemy_tail_grid[BOARD_SIZE * BOARD_SIZE] = {false};
+  alignas(16) bool obstacles[BOARD_SIZE * BOARD_SIZE] = {false};
+  alignas(16) int clear_time_grid[BOARD_SIZE * BOARD_SIZE] = {0};
+
+  // Static food mapping.
+  for (const auto& food : game_state_.board.food) {
+    if (is_in_bounds(food.x, food.y)) {
+      food_grid[food.y * BOARD_SIZE + food.x] = true;
+    }
+  }
+
+  // Snake body mapping.
   for (const auto& snake : game_state_.board.snakes) {
-    // Skip dead snakes.
+    // Elimination check.
     if (snake.elimination_event.has_value()) {
       continue;
     }
 
-    int body_size = static_cast<int>(snake.body.size());
-    bool is_stacked = (body_size < snake.length);
-
-    // Determine tail persistence.
+    // Tail persistence determination.
+    const int body_size = static_cast<int>(snake.body.size());
+    const bool is_stacked = (body_size < snake.length);
     int check_len = body_size;
+
     if (snake.id == game_state_.you.id && (!is_stacked && body_size > 1)) {
       check_len = body_size - 1;
     }
 
-    int current_true_index = 0;
-    hebi::Point last_point = {-1, -1};
-    bool has_last_point = false;
+    if (snake.id == game_state_.you.id) {
+      // Body segment mapping for player.
+      for (int i = 0; i < check_len; ++i) {
+        if (snake.body[i].has_value()) {
+          const hebi::Point p = snake.body[i].value();
 
-    // Mark body obstacles.
-    for (int i = 0; i < check_len; ++i) {
-      if (!snake.body[i].has_value()) {
-        continue;
+          if (is_in_bounds(p.x, p.y)) {
+            const int idx = p.y * BOARD_SIZE + p.x;
+            player_body_grid[idx] = true;
+            obstacles[idx] = true;
+            clear_time_grid[idx] = std::max(clear_time_grid[idx], snake.length - i);
+          }
+        }
+      }
+    } else {
+      // Check visibility or disadvantage status.
+      bool has_null_segment = false;
+
+      for (const auto& segment : snake.body) {
+        if (!segment.has_value()) {
+          has_null_segment = true;
+          break;
+        }
       }
 
-      hebi::Point p = snake.body[i].value();
+      const bool is_disadvantaged = (snake.length + 1 >= game_state_.you.length);
 
-      if (has_last_point) {
-        int dist = std::abs(p.x - last_point.x) + std::abs(p.y - last_point.y);
+      // Enemy head neighbors restriction.
+      if (snake.body.front().has_value() && (has_null_segment || is_disadvantaged)) {
+        const hebi::Point enemy_head = snake.body.front().value();
 
-        if (snake.id != game_state_.you.id && dist > 1) {
-          int cx = last_point.x;
-          int cy = last_point.y;
+        for (int d = 0; d < 4; ++d) {
+          int hx = enemy_head.x + hebi::dx(static_cast<hebi::Direction>(d));
+          int hy = enemy_head.y + hebi::dy(static_cast<hebi::Direction>(d));
 
-          for (int step = 1; step < dist; ++step) {
-            current_true_index++;
+          if (is_in_bounds(hx, hy)) {
+            enemy_head_grid[hy * BOARD_SIZE + hx] = true;
+          }
+        }
+      }
 
-            if (cx < p.x)
-              cx++;
+      // Valid segment detection for enemies.
+      int first_valid_idx = -1;
+      int last_valid_idx = -1;
 
-            else if (cx > p.x)
-              cx--;
+      for (int i = 0; i < check_len; ++i) {
+        if (snake.body[i].has_value()) {
+          if (first_valid_idx == -1) first_valid_idx = i;
+          last_valid_idx = i;
+        }
+      }
 
-            else if (cy < p.y)
-              cy++;
+      if (first_valid_idx != -1) {
+        hebi::Point first_valid_pos = snake.body[first_valid_idx].value();
+        hebi::Point last_valid_pos = snake.body[last_valid_idx].value();
+        hebi::Point current_pos = first_valid_pos;
 
-            else if (cy > p.y)
-              cy--;
+        // Virtual head assignment.
+        if (!snake.body.front().has_value()) {
+          int min_dist_to_you = 999;
 
-            if (cx >= 0 && cx < BOARD_SIZE && cy >= 0 && cy < BOARD_SIZE) {
-              if (!is_visible(cx, cy)) {
-                obstacles[cy][cx] = true;
-                clear_time_grid[cy][cx] = std::max(clear_time_grid[cy][cx], snake.length - current_true_index);
+          for (int d = 0; d < 4; ++d) {
+            int hx = first_valid_pos.x + hebi::dx(static_cast<hebi::Direction>(d));
+            int hy = first_valid_pos.y + hebi::dy(static_cast<hebi::Direction>(d));
+
+            if (is_in_bounds(hx, hy) && !is_visible(hx, hy)) {
+              int current_dist = get_distance(hx, hy, head.x, head.y);
+
+              if (current_dist < min_dist_to_you) {
+                min_dist_to_you = current_dist;
+                current_pos = {hx, hy};
               }
             }
           }
         }
 
-        current_true_index++;
+        // Buffer initialization.
+        alignas(16) hebi::Point segments_to_write[BOARD_SIZE * BOARD_SIZE];
+        int write_count = 0;
 
-      } else {
-        current_true_index = i;
-      }
+        // Register initial position.
+        segments_to_write[write_count] = current_pos;
+        write_count++;
 
-      if (p.x >= 0 && p.x < BOARD_SIZE && p.y >= 0 && p.y < BOARD_SIZE) {
-        obstacles[p.y][p.x] = true;
-        clear_time_grid[p.y][p.x] = std::max(clear_time_grid[p.y][p.x], snake.length - current_true_index);
+        // Body interpolation.
+        for (int i = first_valid_idx; i <= last_valid_idx; ++i) {
+          if (snake.body[i].has_value()) {
+            hebi::Point next_target = snake.body[i].value();
 
-        if (snake.id != game_state_.you.id && i == body_size - 1 && snake.body[body_size - 1].has_value()) {
-          for (int d = 0; d < 4; ++d) {
-            if (head.x + hebi::dx(static_cast<hebi::Direction>(d)) == p.x && head.y + hebi::dy(static_cast<hebi::Direction>(d)) == p.y) {
-              is_enemy_tail[d] = true;
+            // Gap interpolation.
+            while (current_pos.x != next_target.x || current_pos.y != next_target.y) {
+              if (current_pos.x < next_target.x)
+                current_pos.x++;
+              else if (current_pos.x > next_target.x)
+                current_pos.x--;
+              else if (current_pos.y < next_target.y)
+                current_pos.y++;
+              else if (current_pos.y > next_target.y)
+                current_pos.y--;
+
+              if (is_in_bounds(current_pos.x, current_pos.y) &&
+                  (!is_visible(current_pos.x, current_pos.y) || (current_pos.x == next_target.x && current_pos.y == next_target.y))) {
+                segments_to_write[write_count] = current_pos;
+                write_count++;
+              }
             }
           }
         }
-      }
 
-      last_point = p;
-      has_last_point = true;
+        // Virtual tail assignment.
+        if (!snake.body.back().has_value()) {
+          int min_dist_to_you = 999;
+          hebi::Point virtual_tail = last_valid_pos;
+
+          for (int d = 0; d < 4; ++d) {
+            int tx = last_valid_pos.x + hebi::dx(static_cast<hebi::Direction>(d));
+            int ty = last_valid_pos.y + hebi::dy(static_cast<hebi::Direction>(d));
+
+            if (is_in_bounds(tx, ty) && !is_visible(tx, ty) && (tx != segments_to_write[0].x || ty != segments_to_write[0].y)) {
+              int current_dist = get_distance(tx, ty, head.x, head.y);
+
+              if (current_dist < min_dist_to_you) {
+                min_dist_to_you = current_dist;
+                virtual_tail = {tx, ty};
+              }
+            }
+          }
+
+          segments_to_write[write_count] = virtual_tail;
+          write_count++;
+        }
+
+        // Grid batch optimization.
+        for (int i = 0; i < write_count; ++i) {
+          const hebi::Point p = segments_to_write[i];
+          const int idx = p.y * BOARD_SIZE + p.x;
+          obstacles[idx] = true;
+          clear_time_grid[idx] = std::max(clear_time_grid[idx], write_count - i);
+
+          if (i == write_count - 1) {
+            enemy_tail_grid[idx] = true;
+          }
+        }
+      }
     }
   }
 
   // Prep fast BFS grid.
-  std::vector<std::vector<int>> visited(BOARD_SIZE, std::vector<int>(BOARD_SIZE, 0));
-  std::vector<std::vector<int>> step_grid(BOARD_SIZE, std::vector<int>(BOARD_SIZE, 0));
-  std::vector<hebi::Point> queue;
-  queue.reserve(BOARD_SIZE * BOARD_SIZE);
+  alignas(16) int visited[BOARD_SIZE * BOARD_SIZE] = {0};
+  alignas(16) int step_grid[BOARD_SIZE * BOARD_SIZE] = {0};
+  SearchState queue[BOARD_SIZE * BOARD_SIZE];
   int visit_id = 0;
 
-  bool immediate_safe[4] = {false, false, false, false};
-  bool any_safe = false;
+  // Track strategy conditions.
+  MoveEvaluation evaluations[4];
 
-  // Eval each move direction.
   for (int i = 0; i < 4; ++i) {
-    hebi::Direction dir = static_cast<hebi::Direction>(i);
-    int nx = head.x + hebi::dx(dir);
-    int ny = head.y + hebi::dy(dir);
+    evaluations[i] = {false, false, false, false, 0};
+  }
 
-    // Check bounds and collision.
-    if (nx >= 0 && nx < BOARD_SIZE && ny >= 0 && ny < BOARD_SIZE && !obstacles[ny][nx]) {
-      immediate_safe[i] = true;
-      visit_id++;
-      queue.clear();
+  // Direction evaluation.
+  for (int i = 0; i < 4; ++i) {
+    const hebi::Direction dir = static_cast<hebi::Direction>(i);
+    const int nx = head.x + hebi::dx(dir);
+    const int ny = head.y + hebi::dy(dir);
 
-      // Start flood fill.
-      queue.push_back({nx, ny});
-      visited[ny][nx] = visit_id;
-      step_grid[ny][nx] = 1;
-      int reachable_count = 0;
-      size_t queue_index = 0;
+    // Collision check.
+    if (is_in_bounds(nx, ny)) {
+      const int target_idx = ny * BOARD_SIZE + nx;
+      evaluations[i].is_accessible = !obstacles[target_idx];
+      evaluations[i].is_enemy_head = enemy_head_grid[target_idx];
+      evaluations[i].is_enemy_tail = enemy_tail_grid[target_idx];
 
-      // Expand space count.
-      while (queue_index < queue.size() && reachable_count < game_state_.you.length) {
-        hebi::Point current = queue[queue_index++];
-        int current_step = step_grid[current.y][current.x];
-        reachable_count++;
+      if (evaluations[i].is_accessible) {
+        visit_id++;
+        int queue_start = 0;
+        int queue_end = 0;
 
-        // Explore four neighbors.
-        for (int d = 0; d < 4; ++d) {
-          int fx = current.x + hebi::dx(static_cast<hebi::Direction>(d));
-          int fy = current.y + hebi::dy(static_cast<hebi::Direction>(d));
+        // Start flood fill.
+        int initial_food = food_grid[target_idx] ? 1 : 0;
+        queue[queue_end++] = {{nx, ny}, initial_food};
+        visited[target_idx] = visit_id;
+        step_grid[target_idx] = 1;
+        int reachable_count = 0;
 
-          // Check grid bounds.
-          if (fx >= 0 && fx < BOARD_SIZE && fy >= 0 && fy < BOARD_SIZE && visited[fy][fx] != visit_id) {
-            bool time_blocked = (current_step < clear_time_grid[fy][fx]);
+        // Expand space count.
+        while (queue_start < queue_end && reachable_count < game_state_.you.length) {
+          SearchState current = queue[queue_start++];
+          const int current_idx = current.position.y * BOARD_SIZE + current.position.x;
+          int current_step = step_grid[current_idx];
+          reachable_count++;
 
-            // Push unvisited space.
-            if (!time_blocked) {
-              visited[fy][fx] = visit_id;
-              step_grid[fy][fx] = current_step + 1;
-              queue.push_back({fx, fy});
+          // Explore four neighbors.
+          for (int d = 0; d < 4; ++d) {
+            int fx = current.position.x + hebi::dx(static_cast<hebi::Direction>(d));
+            int fy = current.position.y + hebi::dy(static_cast<hebi::Direction>(d));
+
+            if (is_in_bounds(fx, fy)) {
+              const int neighbor_idx = fy * BOARD_SIZE + fx;
+
+              if (visited[neighbor_idx] != visit_id) {
+                // Dynamic tail persistence calculation.
+                int effective_clear_time = clear_time_grid[neighbor_idx];
+                if (player_body_grid[neighbor_idx]) {
+                  effective_clear_time += current.food_eaten;
+                }
+
+                bool time_blocked = (current_step < effective_clear_time);
+
+                // Push unvisited space.
+                if (!time_blocked) {
+                  visited[neighbor_idx] = visit_id;
+                  step_grid[neighbor_idx] = current_step + 1;
+                  int next_food_count = current.food_eaten + (food_grid[neighbor_idx] ? 1 : 0);
+                  queue[queue_end++] = {{fx, fy}, next_food_count};
+                }
+              }
             }
           }
         }
-      }
 
-      // Confirm safe space.
-      if (reachable_count >= game_state_.you.length) {
-        safe_moves_out[i] = true;
-        any_safe = true;
+        evaluations[i].reachable_max_space = reachable_count;
+
+        if (reachable_count >= game_state_.you.length) {
+          evaluations[i].is_space_sufficient = true;
+        }
+
+        // Confirm safe space.
+        if (evaluations[i].is_space_sufficient && !evaluations[i].is_enemy_head) {
+          safe_moves_out[i] = true;
+        }
       }
     }
   }
 
-  // Restore fallback moves.
-  if (!any_safe) {
-    bool enemy_tail_found = false;
+  // Check if any perfect safe move exists.
+  bool has_perfect_move = false;
 
+  for (int i = 0; i < 4; ++i) {
+    if (safe_moves_out[i]) {
+      has_perfect_move = true;
+    }
+  }
+
+  // Execute multi-tier fallback decision tree.
+  if (!has_perfect_move) {
+    bool fallback_found = false;
+
+    // Fallback: Allow space-sufficient enemy heads or enemy tails.
     for (int i = 0; i < 4; ++i) {
-      if (is_enemy_tail[i]) {
+      if ((evaluations[i].is_accessible && evaluations[i].is_space_sufficient && evaluations[i].is_enemy_head) || evaluations[i].is_enemy_tail) {
         safe_moves_out[i] = true;
-        enemy_tail_found = true;
+        fallback_found = true;
       }
     }
 
-    if (!enemy_tail_found) {
+    // Fallback: Select dead end routes providing maximum endurance.
+    if (!fallback_found) {
+      int max_space_found = -1;
+
+      // Find the maximum endurance score.
+      // TODO: 相手を倒す可能性がある場合を蹴っている？
+      // TODO: 相手の頭から逃げる？
       for (int i = 0; i < 4; ++i) {
-        if (immediate_safe[i]) {
+        if (evaluations[i].is_accessible && evaluations[i].reachable_max_space > max_space_found) {
+          max_space_found = evaluations[i].reachable_max_space;
+        }
+      }
+
+      // Allow all routes that match the maximum endurance score.
+      if (max_space_found != -1) {
+        for (int i = 0; i < 4; ++i) {
+          if (evaluations[i].is_accessible && evaluations[i].reachable_max_space == max_space_found) {
+            safe_moves_out[i] = true;
+            fallback_found = true;
+          }
+        }
+      }
+
+      if (!fallback_found) {
+        // Fallback: Force activation across all moves.
+        for (int i = 0; i < 4; ++i) {
           safe_moves_out[i] = true;
         }
       }
