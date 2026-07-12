@@ -68,23 +68,21 @@ void StateProcessor::extract_safe_moves(bool* safe_moves_out) const {
     // Tail persistence determination.
     const int body_size = static_cast<int>(snake.body.size());
     const bool is_stacked = (body_size < snake.length);
-    int check_len = body_size;
-
-    if (snake.id == game_state_.you.id && (!is_stacked && body_size > 1)) {
-      check_len = body_size - 1;
-    }
 
     if (snake.id == game_state_.you.id) {
       // Body segment mapping for player.
-      for (int i = 0; i < check_len; ++i) {
+      for (int i = 0; i < body_size; ++i) {
         if (snake.body[i].has_value()) {
           const hebi::Point p = snake.body[i].value();
 
           if (is_in_bounds(p.x, p.y)) {
             const int idx = p.y * BOARD_SIZE + p.x;
             player_body_grid[idx] = true;
-            obstacles[idx] = true;
-            clear_time_grid[idx] = std::max(clear_time_grid[idx], snake.length - i);
+
+            if ((i < body_size - 1) || is_stacked) {
+              obstacles[idx] = true;
+              clear_time_grid[idx] = std::max(clear_time_grid[idx], snake.length - i);
+            }
           }
         }
       }
@@ -119,7 +117,7 @@ void StateProcessor::extract_safe_moves(bool* safe_moves_out) const {
       int first_valid_idx = -1;
       int last_valid_idx = -1;
 
-      for (int i = 0; i < check_len; ++i) {
+      for (int i = 0; i < body_size; ++i) {
         if (snake.body[i].has_value()) {
           if (first_valid_idx == -1) first_valid_idx = i;
           last_valid_idx = i;
@@ -331,7 +329,16 @@ void StateProcessor::extract_safe_moves(bool* safe_moves_out) const {
             if (is_in_bounds(fx, fy)) {
               const int neighbor_idx = fy * BOARD_SIZE + fx;
 
-              if (visited[neighbor_idx] != visit_id) {
+              // Tail reachability check.
+              bool reached_tail = false;
+
+              if (game_state_.you.body.back().has_value()) {
+                hebi::Point my_tail = game_state_.you.body.back().value();
+
+                if (fx == my_tail.x && fy == my_tail.y) reached_tail = true;
+              }
+
+              if (visited[neighbor_idx] != visit_id && (!obstacles[neighbor_idx] || reached_tail)) {
                 // Dynamic tail persistence calculation.
                 int effective_clear_time = clear_time_grid[neighbor_idx];
                 if (player_body_grid[neighbor_idx]) {
@@ -354,7 +361,19 @@ void StateProcessor::extract_safe_moves(bool* safe_moves_out) const {
 
         evaluations[i].reachable_max_space = reachable_count;
 
-        if (reachable_count >= game_state_.you.length) {
+        // Tail chase check.
+        bool chase_tail = false;
+
+        if (game_state_.you.body.back().has_value()) {
+          hebi::Point my_tail = game_state_.you.body.back().value();
+
+          if (visited[my_tail.y * BOARD_SIZE + my_tail.x] == visit_id) {
+            chase_tail = true;
+          }
+        }
+
+        // Space sufficiency check.
+        if (reachable_count >= game_state_.you.length || chase_tail) {
           evaluations[i].is_space_sufficient = true;
         }
 
