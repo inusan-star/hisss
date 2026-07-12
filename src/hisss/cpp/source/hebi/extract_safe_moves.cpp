@@ -99,7 +99,7 @@ void StateProcessor::extract_safe_moves(bool* safe_moves_out) const {
         }
       }
 
-      const bool is_disadvantaged = (snake.length + 1 >= game_state_.you.length);
+      const bool is_disadvantaged = (snake.length >= game_state_.you.length);
 
       // Enemy head neighbors restriction.
       if (snake.body.front().has_value() && (has_null_segment || is_disadvantaged)) {
@@ -131,32 +131,48 @@ void StateProcessor::extract_safe_moves(bool* safe_moves_out) const {
         hebi::Point last_valid_pos = snake.body[last_valid_idx].value();
         hebi::Point current_pos = first_valid_pos;
 
+        // Buffer initialization.
+        alignas(16) hebi::Point segments_to_write[BOARD_SIZE * BOARD_SIZE];
+        alignas(16) int logical_indices[BOARD_SIZE * BOARD_SIZE];
+        int write_count = 0;
+        int current_logical_idx = 0;
+
         // Virtual head assignment.
         if (!snake.body.front().has_value()) {
           int min_dist_to_you = 999;
+          hebi::Point valid_heads[4];
+          int head_count = 0;
 
           for (int d = 0; d < 4; ++d) {
             int hx = first_valid_pos.x + hebi::dx(static_cast<hebi::Direction>(d));
             int hy = first_valid_pos.y + hebi::dy(static_cast<hebi::Direction>(d));
 
+            // Bounds and visibility check.
             if (is_in_bounds(hx, hy) && !is_visible(hx, hy)) {
               int current_dist = get_distance(hx, hy, head.x, head.y);
 
               if (current_dist < min_dist_to_you) {
                 min_dist_to_you = current_dist;
-                current_pos = {hx, hy};
+                head_count = 0;
+                valid_heads[head_count++] = {hx, hy};
+              } else if (current_dist == min_dist_to_you) {
+                valid_heads[head_count++] = {hx, hy};
               }
             }
           }
+
+          for (int head_idx = 0; head_idx < head_count; ++head_idx) {
+            segments_to_write[write_count] = valid_heads[head_idx];
+            logical_indices[write_count] = current_logical_idx;
+            write_count++;
+          }
+
+          current_pos = valid_heads[0];
+        } else {
+          segments_to_write[write_count] = current_pos;
+          logical_indices[write_count] = current_logical_idx;
+          write_count++;
         }
-
-        // Buffer initialization.
-        alignas(16) hebi::Point segments_to_write[BOARD_SIZE * BOARD_SIZE];
-        int write_count = 0;
-
-        // Register initial position.
-        segments_to_write[write_count] = current_pos;
-        write_count++;
 
         // Body interpolation.
         for (int i = first_valid_idx; i <= last_valid_idx; ++i) {
@@ -174,10 +190,25 @@ void StateProcessor::extract_safe_moves(bool* safe_moves_out) const {
               else if (current_pos.y > next_target.y)
                 current_pos.y--;
 
+              // Bounds and visibility check.
               if (is_in_bounds(current_pos.x, current_pos.y) &&
                   (!is_visible(current_pos.x, current_pos.y) || (current_pos.x == next_target.x && current_pos.y == next_target.y))) {
-                segments_to_write[write_count] = current_pos;
-                write_count++;
+                // Dynamic duplicate check.
+                bool is_duplicate = false;
+
+                for (int check_idx = 0; check_idx < write_count; ++check_idx) {
+                  if (current_pos.x == segments_to_write[check_idx].x && current_pos.y == segments_to_write[check_idx].y) {
+                    is_duplicate = true;
+                    break;
+                  }
+                }
+
+                if (!is_duplicate) {
+                  current_logical_idx++;
+                  segments_to_write[write_count] = current_pos;
+                  logical_indices[write_count] = current_logical_idx;
+                  write_count++;
+                }
               }
             }
           }
@@ -186,34 +217,60 @@ void StateProcessor::extract_safe_moves(bool* safe_moves_out) const {
         // Virtual tail assignment.
         if (!snake.body.back().has_value()) {
           int min_dist_to_you = 999;
-          hebi::Point virtual_tail = last_valid_pos;
+          hebi::Point valid_tails[4];
+          int tail_count = 0;
 
           for (int d = 0; d < 4; ++d) {
             int tx = last_valid_pos.x + hebi::dx(static_cast<hebi::Direction>(d));
             int ty = last_valid_pos.y + hebi::dy(static_cast<hebi::Direction>(d));
 
-            if (is_in_bounds(tx, ty) && !is_visible(tx, ty) && (tx != segments_to_write[0].x || ty != segments_to_write[0].y)) {
-              int current_dist = get_distance(tx, ty, head.x, head.y);
+            // Bounds and visibility check.
+            if (is_in_bounds(tx, ty) && !is_visible(tx, ty)) {
+              // Dynamic duplicate check.
+              bool is_duplicate = false;
 
-              if (current_dist < min_dist_to_you) {
-                min_dist_to_you = current_dist;
-                virtual_tail = {tx, ty};
+              for (int check_idx = 0; check_idx < write_count; ++check_idx) {
+                if (tx == segments_to_write[check_idx].x && ty == segments_to_write[check_idx].y) {
+                  is_duplicate = true;
+                  break;
+                }
+              }
+
+              if (!is_duplicate) {
+                int current_dist = get_distance(tx, ty, head.x, head.y);
+
+                if (current_dist < min_dist_to_you) {
+                  min_dist_to_you = current_dist;
+                  tail_count = 0;
+                  valid_tails[tail_count++] = {tx, ty};
+                } else if (current_dist == min_dist_to_you) {
+                  valid_tails[tail_count++] = {tx, ty};
+                }
               }
             }
           }
 
-          segments_to_write[write_count] = virtual_tail;
-          write_count++;
+          current_logical_idx++;
+
+          for (int tail_idx = 0; tail_idx < tail_count; ++tail_idx) {
+            segments_to_write[write_count] = valid_tails[tail_idx];
+            logical_indices[write_count] = current_logical_idx;
+            write_count++;
+          }
         }
 
         // Grid batch optimization.
+        const int total_logical_steps = current_logical_idx + 1;
+
         for (int i = 0; i < write_count; ++i) {
           const hebi::Point p = segments_to_write[i];
           const int idx = p.y * BOARD_SIZE + p.x;
           obstacles[idx] = true;
-          clear_time_grid[idx] = std::max(clear_time_grid[idx], write_count - i);
 
-          if (i == write_count - 1) {
+          const int time_to_clear = total_logical_steps - logical_indices[i];
+          clear_time_grid[idx] = std::max(clear_time_grid[idx], time_to_clear);
+
+          if (logical_indices[i] == current_logical_idx) {
             enemy_tail_grid[idx] = true;
           }
         }
@@ -330,31 +387,17 @@ void StateProcessor::extract_safe_moves(bool* safe_moves_out) const {
       }
     }
 
-    // Fallback: Select dead end routes providing maximum endurance.
+    // Fallback: Allow all accessible routes.
     if (!fallback_found) {
-      int max_space_found = -1;
-
-      // Find the maximum endurance score.
-      // TODO: 相手を倒す可能性がある場合を蹴っている？
-      // TODO: 相手の頭から逃げる？
       for (int i = 0; i < 4; ++i) {
-        if (evaluations[i].is_accessible && evaluations[i].reachable_max_space > max_space_found) {
-          max_space_found = evaluations[i].reachable_max_space;
+        if (evaluations[i].is_accessible) {
+          safe_moves_out[i] = true;
+          fallback_found = true;
         }
       }
 
-      // Allow all routes that match the maximum endurance score.
-      if (max_space_found != -1) {
-        for (int i = 0; i < 4; ++i) {
-          if (evaluations[i].is_accessible && evaluations[i].reachable_max_space == max_space_found) {
-            safe_moves_out[i] = true;
-            fallback_found = true;
-          }
-        }
-      }
-
+      // Fallback: Force activation across all moves.
       if (!fallback_found) {
-        // Fallback: Force activation across all moves.
         for (int i = 0; i < 4; ++i) {
           safe_moves_out[i] = true;
         }
