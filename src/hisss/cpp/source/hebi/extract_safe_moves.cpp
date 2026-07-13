@@ -145,8 +145,8 @@ void StateProcessor::extract_safe_moves(bool* safe_moves_out) const {
             int hx = first_valid_pos.x + hebi::dx(static_cast<hebi::Direction>(d));
             int hy = first_valid_pos.y + hebi::dy(static_cast<hebi::Direction>(d));
 
-            // Bounds and visibility check.
-            if (is_in_bounds(hx, hy) && !is_visible(hx, hy)) {
+            // Combined bounds, visibility, and player duplicate check.
+            if (is_in_bounds(hx, hy) && !is_visible(hx, hy) && !player_body_grid[hy * BOARD_SIZE + hx]) {
               int current_dist = get_distance(hx, hy, head.x, head.y);
 
               if (current_dist < min_dist_to_you) {
@@ -188,9 +188,10 @@ void StateProcessor::extract_safe_moves(bool* safe_moves_out) const {
               else if (current_pos.y > next_target.y)
                 current_pos.y--;
 
-              // Bounds and visibility check.
+              // Combined bounds, visibility, and player duplicate check.
               if (is_in_bounds(current_pos.x, current_pos.y) &&
-                  (!is_visible(current_pos.x, current_pos.y) || (current_pos.x == next_target.x && current_pos.y == next_target.y))) {
+                  (!is_visible(current_pos.x, current_pos.y) || (current_pos.x == next_target.x && current_pos.y == next_target.y)) &&
+                  !player_body_grid[current_pos.y * BOARD_SIZE + current_pos.x]) {
                 // Dynamic duplicate check.
                 bool is_duplicate = false;
 
@@ -222,8 +223,8 @@ void StateProcessor::extract_safe_moves(bool* safe_moves_out) const {
             int tx = last_valid_pos.x + hebi::dx(static_cast<hebi::Direction>(d));
             int ty = last_valid_pos.y + hebi::dy(static_cast<hebi::Direction>(d));
 
-            // Bounds and visibility check.
-            if (is_in_bounds(tx, ty) && !is_visible(tx, ty)) {
+            // Combined bounds, visibility, and player duplicate check.
+            if (is_in_bounds(tx, ty) && !is_visible(tx, ty) && !player_body_grid[ty * BOARD_SIZE + tx]) {
               // Dynamic duplicate check.
               bool is_duplicate = false;
 
