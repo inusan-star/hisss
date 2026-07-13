@@ -330,18 +330,10 @@ void StateProcessor::extract_safe_moves(bool* safe_moves_out) const {
             if (is_in_bounds(fx, fy)) {
               const int neighbor_idx = fy * BOARD_SIZE + fx;
 
-              // Tail reachability check.
-              bool reached_tail = false;
-
-              if (game_state_.you.body.back().has_value()) {
-                hebi::Point my_tail = game_state_.you.body.back().value();
-
-                if (fx == my_tail.x && fy == my_tail.y) reached_tail = true;
-              }
-
-              if (visited[neighbor_idx] != visit_id && (!obstacles[neighbor_idx] || reached_tail)) {
+              if (visited[neighbor_idx] != visit_id) {
                 // Dynamic tail persistence calculation.
                 int effective_clear_time = clear_time_grid[neighbor_idx];
+
                 if (player_body_grid[neighbor_idx]) {
                   effective_clear_time += current.food_eaten;
                 }
@@ -362,19 +354,8 @@ void StateProcessor::extract_safe_moves(bool* safe_moves_out) const {
 
         evaluations[i].reachable_max_space = reachable_count;
 
-        // Tail chase check.
-        bool chase_tail = false;
-
-        if (game_state_.you.body.back().has_value()) {
-          hebi::Point my_tail = game_state_.you.body.back().value();
-
-          if (visited[my_tail.y * BOARD_SIZE + my_tail.x] == visit_id) {
-            chase_tail = true;
-          }
-        }
-
         // Space sufficiency check.
-        if (reachable_count >= game_state_.you.length || chase_tail) {
+        if (reachable_count >= game_state_.you.length) {
           evaluations[i].is_space_sufficient = true;
         }
 
