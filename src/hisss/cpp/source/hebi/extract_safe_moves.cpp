@@ -177,37 +177,47 @@ void StateProcessor::extract_safe_moves(bool* safe_moves_out) const {
           if (snake.body[i].has_value()) {
             hebi::Point next_target = snake.body[i].value();
 
+            // Validation helper for interpolation steps.
+            auto is_valid_step = [&](const hebi::Point& step_pos) {
+              return is_in_bounds(step_pos.x, step_pos.y) &&
+                     (!is_visible(step_pos.x, step_pos.y) || (step_pos.x == next_target.x && step_pos.y == next_target.y)) &&
+                     !player_body_grid[step_pos.y * BOARD_SIZE + step_pos.x];
+            };
+
             // Gap interpolation.
             while (current_pos.x != next_target.x || current_pos.y != next_target.y) {
-              if (current_pos.x < next_target.x)
-                current_pos.x++;
-              else if (current_pos.x > next_target.x)
-                current_pos.x--;
-              else if (current_pos.y < next_target.y)
-                current_pos.y++;
-              else if (current_pos.y > next_target.y)
-                current_pos.y--;
+              hebi::Point candidate_pos = current_pos;
+              bool is_valid_pos = false;
 
-              // Combined bounds, visibility, and player duplicate check.
-              if (is_in_bounds(current_pos.x, current_pos.y) &&
-                  (!is_visible(current_pos.x, current_pos.y) || (current_pos.x == next_target.x && current_pos.y == next_target.y)) &&
-                  !player_body_grid[current_pos.y * BOARD_SIZE + current_pos.x]) {
-                // Dynamic duplicate check.
-                bool is_duplicate = false;
+              // X-axis interpolation.
+              if (current_pos.x != next_target.x) {
+                candidate_pos.x += (current_pos.x < next_target.x) ? 1 : -1;
+                is_valid_pos = is_valid_step(candidate_pos);
+              }
 
-                for (int check_idx = 0; check_idx < write_count; ++check_idx) {
-                  if (current_pos.x == segments_to_write[check_idx].x && current_pos.y == segments_to_write[check_idx].y) {
-                    is_duplicate = true;
-                    break;
-                  }
+              // Y-axis interpolation.
+              if (current_pos.y != next_target.y && !is_valid_pos) {
+                candidate_pos = current_pos;
+                candidate_pos.y += (current_pos.y < next_target.y) ? 1 : -1;
+              }
+
+              current_pos = candidate_pos;
+
+              // Dynamic duplicate check.
+              bool is_duplicate = false;
+
+              for (int check_idx = 0; check_idx < write_count; ++check_idx) {
+                if (current_pos.x == segments_to_write[check_idx].x && current_pos.y == segments_to_write[check_idx].y) {
+                  is_duplicate = true;
+                  break;
                 }
+              }
 
-                if (!is_duplicate) {
-                  current_logical_idx++;
-                  segments_to_write[write_count] = current_pos;
-                  logical_indices[write_count] = current_logical_idx;
-                  write_count++;
-                }
+              if (!is_duplicate) {
+                current_logical_idx++;
+                segments_to_write[write_count] = current_pos;
+                logical_indices[write_count] = current_logical_idx;
+                write_count++;
               }
             }
           }
