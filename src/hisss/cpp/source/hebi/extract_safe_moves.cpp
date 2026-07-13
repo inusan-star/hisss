@@ -325,6 +325,9 @@ void StateProcessor::extract_safe_moves(bool* safe_moves_out) const {
         step_grid[target_idx] = 1;
         int reachable_count = 0;
 
+        // Tail chase check.
+        bool can_tail_chase = player_body_grid[target_idx];
+
         // Expand space count.
         while (queue_start < queue_end && reachable_count < game_state_.you.length) {
           SearchState current = queue[queue_start++];
@@ -352,6 +355,11 @@ void StateProcessor::extract_safe_moves(bool* safe_moves_out) const {
 
                 // Push unvisited space.
                 if (!time_blocked) {
+                  // Tail chase check.
+                  if (player_body_grid[neighbor_idx]) {
+                    can_tail_chase = true;
+                  }
+
                   visited[neighbor_idx] = visit_id;
                   step_grid[neighbor_idx] = current_step + 1;
                   int next_food_count = current.food_eaten + (food_grid[neighbor_idx] ? 1 : 0);
@@ -365,7 +373,7 @@ void StateProcessor::extract_safe_moves(bool* safe_moves_out) const {
         evaluations[i].reachable_max_space = reachable_count;
 
         // Space sufficiency check.
-        if (reachable_count >= game_state_.you.length) {
+        if (reachable_count >= game_state_.you.length || can_tail_chase) {
           evaluations[i].is_space_sufficient = true;
         }
 
