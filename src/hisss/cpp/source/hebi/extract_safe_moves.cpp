@@ -351,7 +351,7 @@ void StateProcessor::extract_safe_moves(bool* safe_moves_out) const {
                   effective_clear_time += current.food_eaten;
                 }
 
-                bool time_blocked = (current_step < effective_clear_time);
+                bool time_blocked = ((current_step + 1) < effective_clear_time);
 
                 // Push unvisited space.
                 if (!time_blocked) {
