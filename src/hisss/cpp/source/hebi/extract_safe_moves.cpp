@@ -177,47 +177,81 @@ void StateProcessor::extract_safe_moves(bool* safe_moves_out) const {
           if (snake.body[i].has_value()) {
             hebi::Point next_target = snake.body[i].value();
 
-            // Validation helper for interpolation steps.
-            auto is_valid_step = [&](const hebi::Point& step_pos) {
-              return is_in_bounds(step_pos.x, step_pos.y) &&
-                     (!is_visible(step_pos.x, step_pos.y) || (step_pos.x == next_target.x && step_pos.y == next_target.y)) &&
-                     !player_body_grid[step_pos.y * BOARD_SIZE + step_pos.x];
-            };
-
             // Gap interpolation.
-            while (current_pos.x != next_target.x || current_pos.y != next_target.y) {
-              hebi::Point candidate_pos = current_pos;
-              bool is_valid_pos = false;
+            if (current_pos.x != next_target.x || current_pos.y != next_target.y) {
+              alignas(16) int parent_x[BOARD_SIZE * BOARD_SIZE] = {0};
+              alignas(16) int parent_y[BOARD_SIZE * BOARD_SIZE] = {0};
+              alignas(16) bool path_visited[BOARD_SIZE * BOARD_SIZE] = {false};
 
-              // X-axis interpolation.
-              if (current_pos.x != next_target.x) {
-                candidate_pos.x += (current_pos.x < next_target.x) ? 1 : -1;
-                is_valid_pos = is_valid_step(candidate_pos);
-              }
+              hebi::Point path_queue[BOARD_SIZE * BOARD_SIZE];
+              int path_queue_start = 0;
+              int path_queue_end = 0;
 
-              // Y-axis interpolation.
-              if (current_pos.y != next_target.y && !is_valid_pos) {
-                candidate_pos = current_pos;
-                candidate_pos.y += (current_pos.y < next_target.y) ? 1 : -1;
-              }
+              path_queue[path_queue_end++] = current_pos;
+              path_visited[current_pos.y * BOARD_SIZE + current_pos.x] = true;
 
-              current_pos = candidate_pos;
+              bool target_found = false;
 
-              // Dynamic duplicate check.
-              bool is_duplicate = false;
+              // Start BFS traversal.
+              while (path_queue_start < path_queue_end && !target_found) {
+                hebi::Point search_pos = path_queue[path_queue_start++];
 
-              for (int check_idx = 0; check_idx < write_count; ++check_idx) {
-                if (current_pos.x == segments_to_write[check_idx].x && current_pos.y == segments_to_write[check_idx].y) {
-                  is_duplicate = true;
-                  break;
+                for (int d = 0; d < 4; ++d) {
+                  hebi::Point neighbor_pos = {search_pos.x + hebi::dx(static_cast<hebi::Direction>(d)),
+                                              search_pos.y + hebi::dy(static_cast<hebi::Direction>(d))};
+
+                  if (neighbor_pos.x == next_target.x && neighbor_pos.y == next_target.y) {
+                    parent_x[neighbor_pos.y * BOARD_SIZE + neighbor_pos.x] = search_pos.x;
+                    parent_y[neighbor_pos.y * BOARD_SIZE + neighbor_pos.x] = search_pos.y;
+                    target_found = true;
+                    break;
+                  }
+
+                  if (is_in_bounds(neighbor_pos.x, neighbor_pos.y)) {
+                    int neighbor_idx = neighbor_pos.y * BOARD_SIZE + neighbor_pos.x;
+
+                    if (!path_visited[neighbor_idx] && !is_visible(neighbor_pos.x, neighbor_pos.y) && !player_body_grid[neighbor_idx]) {
+                      path_visited[neighbor_idx] = true;
+                      parent_x[neighbor_idx] = search_pos.x;
+                      parent_y[neighbor_idx] = search_pos.y;
+                      path_queue[path_queue_end++] = neighbor_pos;
+                    }
+                  }
                 }
               }
 
-              if (!is_duplicate) {
-                current_logical_idx++;
-                segments_to_write[write_count] = current_pos;
-                logical_indices[write_count] = current_logical_idx;
-                write_count++;
+              if (target_found) {
+                // Reconstruct path.
+                hebi::Point trace_pos = next_target;
+                hebi::Point reverse_path[BOARD_SIZE * BOARD_SIZE];
+                int path_length = 0;
+
+                while (trace_pos.x != current_pos.x || trace_pos.y != current_pos.y) {
+                  reverse_path[path_length++] = trace_pos;
+                  int trace_idx = trace_pos.y * BOARD_SIZE + trace_pos.x;
+                  trace_pos = {parent_x[trace_idx], parent_y[trace_idx]};
+                }
+
+                for (int p = path_length - 1; p >= 0; --p) {
+                  current_pos = reverse_path[p];
+
+                  // Dynamic duplicate check.
+                  bool is_duplicate = false;
+
+                  for (int check_idx = 0; check_idx < write_count; ++check_idx) {
+                    if (current_pos.x == segments_to_write[check_idx].x && current_pos.y == segments_to_write[check_idx].y) {
+                      is_duplicate = true;
+                      break;
+                    }
+                  }
+
+                  if (!is_duplicate) {
+                    current_logical_idx++;
+                    segments_to_write[write_count] = current_pos;
+                    logical_indices[write_count] = current_logical_idx;
+                    write_count++;
+                  }
+                }
               }
             }
           }
