@@ -234,23 +234,10 @@ void StateProcessor::extract_safe_moves(bool* safe_moves_out) const {
 
                 for (int p = path_length - 1; p >= 0; --p) {
                   current_pos = reverse_path[p];
-
-                  // Dynamic duplicate check.
-                  bool is_duplicate = false;
-
-                  for (int check_idx = 0; check_idx < write_count; ++check_idx) {
-                    if (current_pos.x == segments_to_write[check_idx].x && current_pos.y == segments_to_write[check_idx].y) {
-                      is_duplicate = true;
-                      break;
-                    }
-                  }
-
-                  if (!is_duplicate) {
-                    current_logical_idx++;
-                    segments_to_write[write_count] = current_pos;
-                    logical_indices[write_count] = current_logical_idx;
-                    write_count++;
-                  }
+                  current_logical_idx++;
+                  segments_to_write[write_count] = current_pos;
+                  logical_indices[write_count] = current_logical_idx;
+                  write_count++;
                 }
               }
             }
@@ -269,26 +256,14 @@ void StateProcessor::extract_safe_moves(bool* safe_moves_out) const {
 
             // Combined bounds, visibility, and player duplicate check.
             if (is_in_bounds(tx, ty) && !is_visible(tx, ty) && !player_body_grid[ty * BOARD_SIZE + tx]) {
-              // Dynamic duplicate check.
-              bool is_duplicate = false;
+              int current_dist = get_distance(tx, ty, head.x, head.y);
 
-              for (int check_idx = 0; check_idx < write_count; ++check_idx) {
-                if (tx == segments_to_write[check_idx].x && ty == segments_to_write[check_idx].y) {
-                  is_duplicate = true;
-                  break;
-                }
-              }
-
-              if (!is_duplicate) {
-                int current_dist = get_distance(tx, ty, head.x, head.y);
-
-                if (current_dist < min_dist_to_you) {
-                  min_dist_to_you = current_dist;
-                  tail_count = 0;
-                  valid_tails[tail_count++] = {tx, ty};
-                } else if (current_dist == min_dist_to_you) {
-                  valid_tails[tail_count++] = {tx, ty};
-                }
+              if (current_dist < min_dist_to_you) {
+                min_dist_to_you = current_dist;
+                tail_count = 0;
+                valid_tails[tail_count++] = {tx, ty};
+              } else if (current_dist == min_dist_to_you) {
+                valid_tails[tail_count++] = {tx, ty};
               }
             }
           }
