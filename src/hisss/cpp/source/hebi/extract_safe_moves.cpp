@@ -137,7 +137,7 @@ void StateProcessor::extract_safe_moves(bool* safe_moves_out) const {
 
         // Virtual head assignment.
         if (!snake.body.front().has_value()) {
-          int min_dist_to_you = 999;
+          int min_dist_to_you = 9999;
           hebi::Point valid_heads[4];
           int head_count = 0;
 
@@ -246,7 +246,7 @@ void StateProcessor::extract_safe_moves(bool* safe_moves_out) const {
 
         // Virtual tail assignment.
         if (!snake.body.back().has_value()) {
-          int min_dist_to_you = 999;
+          int min_dist_to_you = 9999;
           hebi::Point valid_tails[4];
           int tail_count = 0;
 
