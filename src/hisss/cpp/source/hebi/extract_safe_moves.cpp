@@ -15,11 +15,10 @@ struct SearchState {
 // Internal evaluation state.
 struct MoveEvaluation {
   bool is_accessible;
+  bool is_space_sufficient;
   bool is_enemy_head;
   bool is_enemy_tail;
-  int space_strict;
-  int space_normal;
-  int space_desperate;
+  int reachable_max_space;
 };
 
 void StateProcessor::extract_safe_moves(bool* safe_moves_out) const {
@@ -51,8 +50,6 @@ void StateProcessor::extract_safe_moves(bool* safe_moves_out) const {
   alignas(16) bool enemy_tail_grid[BOARD_SIZE * BOARD_SIZE] = {false};
   alignas(16) bool obstacles[BOARD_SIZE * BOARD_SIZE] = {false};
   alignas(16) int clear_time_grid[BOARD_SIZE * BOARD_SIZE] = {0};
-
-  std::vector<hebi::Point> active_enemy_heads;
 
   // Static food mapping.
   for (const auto& food : game_state_.board.food) {
@@ -131,9 +128,6 @@ void StateProcessor::extract_safe_moves(bool* safe_moves_out) const {
         hebi::Point first_valid_pos = snake.body[first_valid_idx].value();
         hebi::Point last_valid_pos = snake.body[last_valid_idx].value();
         hebi::Point current_pos = first_valid_pos;
-
-        // Track valid enemy head for Voronoi dominance.
-        active_enemy_heads.push_back(first_valid_pos);
 
         // Buffer initialization.
         alignas(16) hebi::Point segments_to_write[BOARD_SIZE * BOARD_SIZE];
@@ -312,7 +306,7 @@ void StateProcessor::extract_safe_moves(bool* safe_moves_out) const {
   MoveEvaluation evaluations[4];
 
   for (int i = 0; i < 4; ++i) {
-    evaluations[i] = {false, false, false, 0, 0, 0};
+    evaluations[i] = {false, false, false, false, 0};
   }
 
   // Direction evaluation.
@@ -329,169 +323,111 @@ void StateProcessor::extract_safe_moves(bool* safe_moves_out) const {
       evaluations[i].is_enemy_tail = enemy_tail_grid[target_idx];
 
       if (evaluations[i].is_accessible) {
-        // Multi-tier space evaluation (0: strict, 1: normal, 2: desperate)
-        for (int mode = 0; mode < 3; ++mode) {
-          visit_id++;
-          int queue_start = 0;
-          int queue_end = 0;
+        visit_id++;
+        int queue_start = 0;
+        int queue_end = 0;
 
-          // Start flood fill.
-          int initial_food = food_grid[target_idx] ? 1 : 0;
-          queue[queue_end++] = {{nx, ny}, initial_food};
-          visited[target_idx] = visit_id;
-          step_grid[target_idx] = 1;
-          int reachable_count = 0;
+        // Start flood fill.
+        int initial_food = food_grid[target_idx] ? 1 : 0;
+        queue[queue_end++] = {{nx, ny}, initial_food};
+        visited[target_idx] = visit_id;
+        step_grid[target_idx] = 1;
+        int reachable_count = 0;
 
-          // Tail chase check.
-          bool can_tail_chase = player_body_grid[target_idx];
+        // Tail chase check.
+        bool can_tail_chase = player_body_grid[target_idx];
 
-          // Expand space count.
-          while (queue_start < queue_end && reachable_count < game_state_.you.length) {
-            SearchState current = queue[queue_start++];
-            const int current_idx = current.position.y * BOARD_SIZE + current.position.x;
-            int current_step = step_grid[current_idx];
-            reachable_count++;
+        // Expand space count.
+        while (queue_start < queue_end && reachable_count < game_state_.you.length) {
+          SearchState current = queue[queue_start++];
+          const int current_idx = current.position.y * BOARD_SIZE + current.position.x;
+          int current_step = step_grid[current_idx];
+          reachable_count++;
 
-            // Explore four neighbors.
-            for (int d = 0; d < 4; ++d) {
-              int fx = current.position.x + hebi::dx(static_cast<hebi::Direction>(d));
-              int fy = current.position.y + hebi::dy(static_cast<hebi::Direction>(d));
+          // Explore four neighbors.
+          for (int d = 0; d < 4; ++d) {
+            int fx = current.position.x + hebi::dx(static_cast<hebi::Direction>(d));
+            int fy = current.position.y + hebi::dy(static_cast<hebi::Direction>(d));
 
-              if (is_in_bounds(fx, fy)) {
-                const int neighbor_idx = fy * BOARD_SIZE + fx;
+            if (is_in_bounds(fx, fy)) {
+              const int neighbor_idx = fy * BOARD_SIZE + fx;
 
-                if (visited[neighbor_idx] != visit_id) {
-                  // Dynamic tail persistence calculation.
-                  int effective_clear_time = clear_time_grid[neighbor_idx];
+              if (visited[neighbor_idx] != visit_id) {
+                // Dynamic tail persistence calculation.
+                int effective_clear_time = clear_time_grid[neighbor_idx];
 
+                if (player_body_grid[neighbor_idx]) {
+                  effective_clear_time += current.food_eaten;
+                }
+
+                bool time_blocked = ((current_step + 1) < effective_clear_time);
+
+                // Push unvisited space.
+                if (!time_blocked) {
+                  // Tail chase check.
                   if (player_body_grid[neighbor_idx]) {
-                    effective_clear_time += current.food_eaten;
+                    can_tail_chase = true;
                   }
 
-                  bool time_blocked = ((current_step + 1) < effective_clear_time);
-
-                  // Push unvisited space.
-                  if (!time_blocked) {
-                    bool mode_blocked = false;
-
-                    if (mode == 0) {  // space_strict
-                      for (const auto& eh : active_enemy_heads) {
-                        int enemy_arrival_turn = get_distance(fx, fy, eh.x, eh.y);
-                        int my_arrival_turn = current_step + 1;
-                        if (enemy_arrival_turn <= 2 && enemy_arrival_turn <= my_arrival_turn) {
-                          mode_blocked = true;
-                          break;
-                        }
-                      }
-                      if (!mode_blocked && enemy_head_grid[neighbor_idx]) {
-                        mode_blocked = true;
-                      }
-                    } else if (mode == 1) {  // space_normal
-                      if (enemy_head_grid[neighbor_idx]) {
-                        mode_blocked = true;
-                      }
-                    }
-
-                    if (!mode_blocked) {
-                      // Tail chase check.
-                      if (player_body_grid[neighbor_idx]) {
-                        can_tail_chase = true;
-                      }
-
-                      visited[neighbor_idx] = visit_id;
-                      step_grid[neighbor_idx] = current_step + 1;
-                      int next_food_count = current.food_eaten + (food_grid[neighbor_idx] ? 1 : 0);
-                      queue[queue_end++] = {{fx, fy}, next_food_count};
-                    }
-                  }
+                  visited[neighbor_idx] = visit_id;
+                  step_grid[neighbor_idx] = current_step + 1;
+                  int next_food_count = current.food_eaten + (food_grid[neighbor_idx] ? 1 : 0);
+                  queue[queue_end++] = {{fx, fy}, next_food_count};
                 }
               }
             }
           }
+        }
 
-          // Merge tail chase logic into final reachable count.
-          if (can_tail_chase) {
-            reachable_count = std::max(reachable_count, game_state_.you.length);
-          }
+        evaluations[i].reachable_max_space = reachable_count;
 
-          if (mode == 0)
-            evaluations[i].space_strict = reachable_count;
-          else if (mode == 1)
-            evaluations[i].space_normal = reachable_count;
-          else if (mode == 2)
-            evaluations[i].space_desperate = reachable_count;
+        // Space sufficiency check.
+        if (reachable_count >= game_state_.you.length || can_tail_chase) {
+          evaluations[i].is_space_sufficient = true;
+        }
+
+        // Confirm safe space.
+        if (evaluations[i].is_space_sufficient && !evaluations[i].is_enemy_head) {
+          safe_moves_out[i] = true;
         }
       }
+    }
+  }
+
+  // Check if any perfect safe move exists.
+  bool has_perfect_move = false;
+
+  for (int i = 0; i < 4; ++i) {
+    if (safe_moves_out[i]) {
+      has_perfect_move = true;
     }
   }
 
   // Execute multi-tier fallback decision tree.
+  if (!has_perfect_move) {
+    bool fallback_found = false;
 
-  // Tier 1: Perfect safe (Strict Safe)
-  bool has_tier1 = false;
-  for (int i = 0; i < 4; ++i) {
-    if (evaluations[i].is_accessible && evaluations[i].space_strict >= game_state_.you.length && !evaluations[i].is_enemy_head) {
-      safe_moves_out[i] = true;
-      has_tier1 = true;
-    }
-  }
-
-  if (!has_tier1) {
-    // Tier 2: Normal safe
-    bool has_tier2 = false;
+    // Fallback: Allow space-sufficient enemy heads or enemy tails.
     for (int i = 0; i < 4; ++i) {
-      if (evaluations[i].is_accessible && evaluations[i].space_normal >= game_state_.you.length && !evaluations[i].is_enemy_head) {
+      if ((evaluations[i].is_accessible && evaluations[i].is_space_sufficient && evaluations[i].is_enemy_head) || evaluations[i].is_enemy_tail) {
         safe_moves_out[i] = true;
-        has_tier2 = true;
+        fallback_found = true;
       }
     }
 
-    if (!has_tier2) {
-      // Tier 3: Best depth survival
-      int max_space = -1;
+    // Fallback: Allow all accessible routes.
+    if (!fallback_found) {
       for (int i = 0; i < 4; ++i) {
         if (evaluations[i].is_accessible) {
-          int space = std::max(evaluations[i].space_strict, evaluations[i].space_normal);
-          if (space > max_space) {
-            max_space = space;
-          }
+          safe_moves_out[i] = true;
+          fallback_found = true;
         }
       }
 
-      bool has_tier3 = false;
-      if (max_space > 0) {
+      // Fallback: Force activation across all moves.
+      if (!fallback_found) {
         for (int i = 0; i < 4; ++i) {
-          if (evaluations[i].is_accessible && std::max(evaluations[i].space_strict, evaluations[i].space_normal) == max_space) {
-            safe_moves_out[i] = true;
-            has_tier3 = true;
-          }
-        }
-      }
-
-      if (!has_tier3) {
-        // Tier 4: Risk take / desperate survival
-        bool has_tier4 = false;
-        for (int i = 0; i < 4; ++i) {
-          if (evaluations[i].is_accessible && evaluations[i].space_desperate > 0) {
-            safe_moves_out[i] = true;
-            has_tier4 = true;
-          }
-        }
-
-        // Ultimate Fallback: Allow all accessible routes, or force activation if completely boxed in.
-        if (!has_tier4) {
-          bool any_set = false;
-          for (int i = 0; i < 4; ++i) {
-            if (evaluations[i].is_accessible) {
-              safe_moves_out[i] = true;
-              any_set = true;
-            }
-          }
-          if (!any_set) {
-            for (int i = 0; i < 4; ++i) {
-              safe_moves_out[i] = true;
-            }
-          }
+          safe_moves_out[i] = true;
         }
       }
     }
