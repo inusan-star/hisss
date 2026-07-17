@@ -63,7 +63,7 @@ struct MoveEvaluation {
   int reachable_max_space;
 };
 
-void StateProcessor::extract_safe_moves(bool* safe_moves_out) const {
+void StateProcessor::extract_safe_moves(int32_t* memory_map_out, bool* safe_moves_out) const {
   // Reset move outputs.
   safe_moves_out[0] = false;
   safe_moves_out[1] = false;
@@ -94,15 +94,11 @@ void StateProcessor::extract_safe_moves(bool* safe_moves_out) const {
     }
   }
 
-  // Map player body.
+  // Map player body for masking.
   {
     const auto& you = game_state_.you;
-
-    // Check stacked tail.
     const int body_size = static_cast<int>(you.body.size());
-    const bool is_stacked = (body_size < you.length);
 
-    // Process player body.
     for (int segment_index = 0; segment_index < body_size; ++segment_index) {
       if (you.body[segment_index].has_value()) {
         const hebi::Point segment_pos = you.body[segment_index].value();
@@ -110,11 +106,6 @@ void StateProcessor::extract_safe_moves(bool* safe_moves_out) const {
         if (static_cast<unsigned>(segment_pos.x) < U_BOARD_SIZE && static_cast<unsigned>(segment_pos.y) < U_BOARD_SIZE) {
           const int flat_index = segment_pos.y * BOARD_SIZE + segment_pos.x;
           player_body_grid.set(flat_index);
-
-          if ((segment_index < body_size - 1) || is_stacked) {
-            obstacles.set(flat_index);
-            clear_time_grid[flat_index] = std::max(clear_time_grid[flat_index], you.length - segment_index);
-          }
         }
       }
     }
@@ -150,9 +141,9 @@ void StateProcessor::extract_safe_moves(bool* safe_moves_out) const {
     if (snake.body.front().has_value() && (has_null_segment || is_disadvantaged)) {
       const hebi::Point enemy_head = snake.body.front().value();
 
-      const auto add_enemy_head_grid = [&](int d) __attribute__((always_inline)) {
-        const int hx = enemy_head.x + hebi::dx(static_cast<hebi::Direction>(d));
-        const int hy = enemy_head.y + hebi::dy(static_cast<hebi::Direction>(d));
+      const auto add_enemy_head_grid = [&](int direction) __attribute__((always_inline)) {
+        const int hx = enemy_head.x + hebi::dx(static_cast<hebi::Direction>(direction));
+        const int hy = enemy_head.y + hebi::dy(static_cast<hebi::Direction>(direction));
 
         if (static_cast<unsigned>(hx) < U_BOARD_SIZE && static_cast<unsigned>(hy) < U_BOARD_SIZE) {
           enemy_head_grid.set(hy * BOARD_SIZE + hx);
@@ -195,9 +186,9 @@ void StateProcessor::extract_safe_moves(bool* safe_moves_out) const {
         hebi::Point valid_heads[4];
         int head_count = 0;
 
-        const auto check_virtual_head = [&](int d) __attribute__((always_inline)) {
-          const int hx = first_valid_pos.x + hebi::dx(static_cast<hebi::Direction>(d));
-          const int hy = first_valid_pos.y + hebi::dy(static_cast<hebi::Direction>(d));
+        const auto check_virtual_head = [&](int direction) __attribute__((always_inline)) {
+          const int hx = first_valid_pos.x + hebi::dx(static_cast<hebi::Direction>(direction));
+          const int hy = first_valid_pos.y + hebi::dy(static_cast<hebi::Direction>(direction));
 
           if (static_cast<unsigned>(hx) < U_BOARD_SIZE && static_cast<unsigned>(hy) < U_BOARD_SIZE) {
             const int flat_index = hy * BOARD_SIZE + hx;
@@ -270,9 +261,9 @@ void StateProcessor::extract_safe_moves(bool* safe_moves_out) const {
               const int search_flat = search_pos.y * BOARD_SIZE + search_pos.x;
 
               // Evaluate neighbors.
-              for (int d = 0; d < 4; ++d) {
-                const int hx = search_pos.x + hebi::dx(static_cast<hebi::Direction>(d));
-                const int hy = search_pos.y + hebi::dy(static_cast<hebi::Direction>(d));
+              for (int direction = 0; direction < 4; ++direction) {
+                const int hx = search_pos.x + hebi::dx(static_cast<hebi::Direction>(direction));
+                const int hy = search_pos.y + hebi::dy(static_cast<hebi::Direction>(direction));
 
                 if (static_cast<unsigned>(hx) < U_BOARD_SIZE && static_cast<unsigned>(hy) < U_BOARD_SIZE) {
                   const int neighbor_flat = hy * BOARD_SIZE + hx;
@@ -304,8 +295,8 @@ void StateProcessor::extract_safe_moves(bool* safe_moves_out) const {
                 trace_pos = {parent_flat % BOARD_SIZE, parent_flat / BOARD_SIZE};
               }
 
-              for (int p = path_length - 1; p >= 0; --p) {
-                current_pos = reverse_path[p];
+              for (int path_index = path_length - 1; path_index >= 0; --path_index) {
+                current_pos = reverse_path[path_index];
                 current_logical_index++;
                 segments_to_write[write_count] = current_pos;
                 logical_indices[write_count] = current_logical_index;
@@ -323,9 +314,9 @@ void StateProcessor::extract_safe_moves(bool* safe_moves_out) const {
         int tail_count = 0;
 
         // Evaluate tail candidates.
-        const auto check_virtual_tail = [&](int d) __attribute__((always_inline)) {
-          const int tx = current_pos.x + hebi::dx(static_cast<hebi::Direction>(d));
-          const int ty = current_pos.y + hebi::dy(static_cast<hebi::Direction>(d));
+        const auto check_virtual_tail = [&](int direction) __attribute__((always_inline)) {
+          const int tx = current_pos.x + hebi::dx(static_cast<hebi::Direction>(direction));
+          const int ty = current_pos.y + hebi::dy(static_cast<hebi::Direction>(direction));
 
           // Check boundaries.
           if (static_cast<unsigned>(tx) < U_BOARD_SIZE && static_cast<unsigned>(ty) < U_BOARD_SIZE) {
@@ -363,23 +354,129 @@ void StateProcessor::extract_safe_moves(bool* safe_moves_out) const {
       // Map reconstructed body.
       const int total_logical_steps = current_logical_index + 1;
 
-      for (int i = 0; i < write_count; ++i) {
-        const hebi::Point p = segments_to_write[i];
+      for (int write_index = 0; write_index < write_count; ++write_index) {
+        const hebi::Point segment_pos = segments_to_write[write_index];
 
         // Check boundaries.
-        if (static_cast<unsigned>(p.x) < U_BOARD_SIZE && static_cast<unsigned>(p.y) < U_BOARD_SIZE) {
-          const int flat_index = p.y * BOARD_SIZE + p.x;
+        if (static_cast<unsigned>(segment_pos.x) < U_BOARD_SIZE && static_cast<unsigned>(segment_pos.y) < U_BOARD_SIZE) {
+          const int flat_index = segment_pos.y * BOARD_SIZE + segment_pos.x;
           obstacles.set(flat_index);
 
-          const int time_to_clear = total_logical_steps - logical_indices[i];
+          const int time_to_clear = total_logical_steps - logical_indices[write_index];
 
           // Track segment expiration.
           if (time_to_clear > clear_time_grid[flat_index]) {
             clear_time_grid[flat_index] = time_to_clear;
           }
 
-          if (logical_indices[i] == current_logical_index) {
+          if (logical_indices[write_index] == current_logical_index) {
             enemy_tail_grid.set(flat_index);
+          }
+        }
+      }
+
+      // Propagate memory map.
+      if (write_count > 1) {
+        hebi::Point current_position = segments_to_write[0];
+        int current_flat_index = current_position.y * BOARD_SIZE + current_position.x;
+        bool is_current_visible = (LUTS.visibility_bits[head_flat][current_flat_index >> 6] & (1ULL << (current_flat_index & 63))) != 0;
+
+        for (int write_index = 0; write_index < write_count - 1; ++write_index) {
+          const hebi::Point next_position = segments_to_write[write_index + 1];
+          const int next_flat_index = next_position.y * BOARD_SIZE + next_position.x;
+          const bool is_next_visible = (LUTS.visibility_bits[head_flat][next_flat_index >> 6] & (1ULL << (next_flat_index & 63))) != 0;
+
+          // Detect transition .
+          if (is_current_visible && !is_next_visible) {
+            int source_memory = memory_map_out[next_flat_index];
+
+            if (source_memory == 0) {
+              // Evaluate adjacent cells.
+              const hebi::Point check_position = segments_to_write[write_index];
+              const auto check_hidden_memory = [&](int direction) __attribute__((always_inline)) {
+                const int nx = check_position.x + hebi::dx(static_cast<hebi::Direction>(direction));
+                const int ny = check_position.y + hebi::dy(static_cast<hebi::Direction>(direction));
+
+                if (static_cast<unsigned>(nx) < U_BOARD_SIZE && static_cast<unsigned>(ny) < U_BOARD_SIZE) {
+                  const int n_flat = ny * BOARD_SIZE + nx;
+                  const bool n_visible = (LUTS.visibility_bits[head_flat][n_flat >> 6] & (1ULL << (n_flat & 63))) != 0;
+
+                  if (!n_visible && memory_map_out[n_flat] > source_memory) {
+                    source_memory = memory_map_out[n_flat];
+                  }
+                }
+              };
+
+              check_hidden_memory(0);
+              check_hidden_memory(1);
+              check_hidden_memory(2);
+              check_hidden_memory(3);
+            }
+
+            // Determine propagation time.
+            int propagation_time = source_memory;
+
+            // Propagate through the segment chain.
+            for (int trace_index = write_index; trace_index >= 0; --trace_index) {
+              const hebi::Point trace_position = segments_to_write[trace_index];
+              const int trace_flat_index = trace_position.y * BOARD_SIZE + trace_position.x;
+
+              if (propagation_time > clear_time_grid[trace_flat_index]) {
+                clear_time_grid[trace_flat_index] = propagation_time;
+              } else {
+                break;
+              }
+
+              propagation_time++;
+            }
+          }
+
+          is_current_visible = is_next_visible;
+        }
+      }
+    }
+  }
+
+  // Sync memory map.
+  {
+    for (int cell_index = 0; cell_index < CELLS_COUNT; ++cell_index) {
+      const bool is_visible = (LUTS.visibility_bits[head_flat][cell_index >> 6] & (1ULL << (cell_index & 63))) != 0;
+      int final_time = clear_time_grid[cell_index];
+
+      if (!is_visible) {
+        int past_memory = memory_map_out[cell_index];
+        past_memory = (past_memory > 0) ? past_memory - 1 : 0;
+
+        if (past_memory > final_time) {
+          final_time = past_memory;
+        }
+      }
+
+      memory_map_out[cell_index] = final_time;
+
+      if (final_time > 0) {
+        obstacles.set(cell_index);
+        clear_time_grid[cell_index] = final_time;
+      }
+    }
+  }
+
+  // Map player body for obstacles.
+  {
+    const auto& you = game_state_.you;
+    const int body_size = static_cast<int>(you.body.size());
+    const bool is_stacked = (body_size < you.length);
+
+    for (int segment_index = 0; segment_index < body_size; ++segment_index) {
+      if (you.body[segment_index].has_value()) {
+        const hebi::Point segment_pos = you.body[segment_index].value();
+
+        if (static_cast<unsigned>(segment_pos.x) < U_BOARD_SIZE && static_cast<unsigned>(segment_pos.y) < U_BOARD_SIZE) {
+          const int flat_index = segment_pos.y * BOARD_SIZE + segment_pos.x;
+
+          if ((segment_index < body_size - 1) || is_stacked) {
+            obstacles.set(flat_index);
+            clear_time_grid[flat_index] = you.length - segment_index;
           }
         }
       }

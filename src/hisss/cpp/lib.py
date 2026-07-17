@@ -216,6 +216,7 @@ class CPPLibrary:
         self.lib.get_board_size_cpp.restype = ct.c_int
 
         self.lib.process_state_cpp.argtypes = [
+            ct.POINTER(ct.c_int32),
             ct.c_char_p,
             ct.c_char_p,
             ct.POINTER(ct.c_bool),
@@ -325,6 +326,7 @@ class CPPLibrary:
 
     def process_state(
         self,
+        memory_map: np.ndarray,
         partial_state_json: str,
         perfect_state_json: str | None = None,
         features_flag: bool = False,
@@ -347,10 +349,18 @@ class CPPLibrary:
                 value_features_out = np.zeros((8, board_size, board_size), dtype=np.float32)
                 value_features_p = value_features_out.ctypes.data_as(ct.POINTER(ct.c_float))
 
+        memory_map_p = memory_map.ctypes.data_as(ct.POINTER(ct.c_int32))
         partial_state_encoded = partial_state_json.encode("utf-8")
         perfect_state_encoded = perfect_state_json.encode("utf-8") if perfect_state_json is not None else None
 
-        self.lib.process_state_cpp(partial_state_encoded, perfect_state_encoded, safe_moves_p, policy_features_p, value_features_p)
+        self.lib.process_state_cpp(
+            memory_map_p,
+            partial_state_encoded,
+            perfect_state_encoded,
+            safe_moves_p,
+            policy_features_p,
+            value_features_p,
+        )
 
         if features_flag:
             assert policy_features_out is not None
