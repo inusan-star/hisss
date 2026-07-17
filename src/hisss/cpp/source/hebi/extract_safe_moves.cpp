@@ -153,6 +153,7 @@ void StateProcessor::extract_safe_moves(bool* safe_moves_out) const {
       const auto add_enemy_head_grid = [&](int d) __attribute__((always_inline)) {
         const int hx = enemy_head.x + hebi::dx(static_cast<hebi::Direction>(d));
         const int hy = enemy_head.y + hebi::dy(static_cast<hebi::Direction>(d));
+
         if (static_cast<unsigned>(hx) < U_BOARD_SIZE && static_cast<unsigned>(hy) < U_BOARD_SIZE) {
           enemy_head_grid.set(hy * BOARD_SIZE + hx);
         }
