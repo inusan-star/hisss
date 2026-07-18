@@ -28,17 +28,18 @@ struct LookupTables {
 
   constexpr LookupTables() : distance{}, visibility_bits{} {
     for (int source = 0; source < CELLS_COUNT; ++source) {
-      const int y1 = source / BOARD_SIZE;
-      const int x1 = source % BOARD_SIZE;
+      const int source_y = source / BOARD_SIZE;
+      const int source_x = source % BOARD_SIZE;
 
       for (int target = 0; target < CELLS_COUNT; ++target) {
-        const int y2 = target / BOARD_SIZE;
-        const int x2 = target % BOARD_SIZE;
+        const int target_y = target / BOARD_SIZE;
+        const int target_x = target % BOARD_SIZE;
 
-        const int dist = (x1 > x2 ? x1 - x2 : x2 - x1) + (y1 > y2 ? y1 - y2 : y2 - y1);
-        distance[source][target] = static_cast<uint8_t>(dist);
+        const int manhattan_distance =
+            (source_x > target_x ? source_x - target_x : target_x - source_x) + (source_y > target_y ? source_y - target_y : target_y - source_y);
+        distance[source][target] = static_cast<uint8_t>(manhattan_distance);
 
-        if (dist <= VIEW_RADIUS) {
+        if (manhattan_distance <= VIEW_RADIUS) {
           visibility_bits[source][target >> 6] |= (1ULL << (target & 63));
         }
       }
@@ -142,11 +143,11 @@ void StateProcessor::extract_safe_moves(int32_t* memory_map_out, bool* safe_move
       const hebi::Point enemy_head = snake.body.front().value();
 
       const auto add_enemy_head_grid = [&](int direction) __attribute__((always_inline)) {
-        const int hx = enemy_head.x + hebi::dx(static_cast<hebi::Direction>(direction));
-        const int hy = enemy_head.y + hebi::dy(static_cast<hebi::Direction>(direction));
+        const int adjacent_head_x = enemy_head.x + hebi::dx(static_cast<hebi::Direction>(direction));
+        const int adjacent_head_y = enemy_head.y + hebi::dy(static_cast<hebi::Direction>(direction));
 
-        if (static_cast<unsigned>(hx) < U_BOARD_SIZE && static_cast<unsigned>(hy) < U_BOARD_SIZE) {
-          enemy_head_grid.set(hy * BOARD_SIZE + hx);
+        if (static_cast<unsigned>(adjacent_head_x) < U_BOARD_SIZE && static_cast<unsigned>(adjacent_head_y) < U_BOARD_SIZE) {
+          enemy_head_grid.set(adjacent_head_y * BOARD_SIZE + adjacent_head_x);
         }
       };
 
@@ -187,11 +188,11 @@ void StateProcessor::extract_safe_moves(int32_t* memory_map_out, bool* safe_move
         int head_count = 0;
 
         const auto check_virtual_head = [&](int direction) __attribute__((always_inline)) {
-          const int hx = first_valid_pos.x + hebi::dx(static_cast<hebi::Direction>(direction));
-          const int hy = first_valid_pos.y + hebi::dy(static_cast<hebi::Direction>(direction));
+          const int virtual_head_x = first_valid_pos.x + hebi::dx(static_cast<hebi::Direction>(direction));
+          const int virtual_head_y = first_valid_pos.y + hebi::dy(static_cast<hebi::Direction>(direction));
 
-          if (static_cast<unsigned>(hx) < U_BOARD_SIZE && static_cast<unsigned>(hy) < U_BOARD_SIZE) {
-            const int flat_index = hy * BOARD_SIZE + hx;
+          if (static_cast<unsigned>(virtual_head_x) < U_BOARD_SIZE && static_cast<unsigned>(virtual_head_y) < U_BOARD_SIZE) {
+            const int flat_index = virtual_head_y * BOARD_SIZE + virtual_head_x;
 
             if (!invalid_mask.get(flat_index)) {
               const int current_dist = LUTS.distance[head_flat][flat_index];
@@ -199,9 +200,9 @@ void StateProcessor::extract_safe_moves(int32_t* memory_map_out, bool* safe_move
               if (current_dist < min_dist_to_you) {
                 min_dist_to_you = current_dist;
                 head_count = 0;
-                valid_heads[head_count++] = {hx, hy};
+                valid_heads[head_count++] = {virtual_head_x, virtual_head_y};
               } else if (current_dist == min_dist_to_you) {
-                valid_heads[head_count++] = {hx, hy};
+                valid_heads[head_count++] = {virtual_head_x, virtual_head_y};
               }
             }
           }
@@ -225,82 +226,85 @@ void StateProcessor::extract_safe_moves(int32_t* memory_map_out, bool* safe_move
         write_count++;
       }
 
-      // Pathfinding state.
-      Bitboard path_visited;
-      alignas(32) int parent_idx[CELLS_COUNT];
-      hebi::Point path_queue[CELLS_COUNT];
-      alignas(16) hebi::Point reverse_path[CELLS_COUNT];
+      // Predict hidden enemy body.
+      {
+        // Pathfinding state.
+        Bitboard path_visited;
+        alignas(32) int parent_idx[CELLS_COUNT];
+        hebi::Point path_queue[CELLS_COUNT];
+        alignas(16) hebi::Point reverse_path[CELLS_COUNT];
 
-      // Reconstruct body gaps.
-      for (int segment_index = first_valid_index; segment_index <= last_valid_index; ++segment_index) {
-        if (snake.body[segment_index].has_value()) {
-          const hebi::Point next_target = snake.body[segment_index].value();
+        // Reconstruct body gaps.
+        for (int segment_index = first_valid_index; segment_index <= last_valid_index; ++segment_index) {
+          if (snake.body[segment_index].has_value()) {
+            const hebi::Point next_target = snake.body[segment_index].value();
 
-          // Check spatial gap.
-          if (current_pos.x != next_target.x || current_pos.y != next_target.y) {
-            // Reset search state.
-            path_visited.blocks[0] = 0;
-            path_visited.blocks[1] = 0;
-            path_visited.blocks[2] = 0;
-            path_visited.blocks[3] = 0;
+            // Check spatial gap.
+            if (current_pos.x != next_target.x || current_pos.y != next_target.y) {
+              // Reset search state.
+              path_visited.blocks[0] = 0;
+              path_visited.blocks[1] = 0;
+              path_visited.blocks[2] = 0;
+              path_visited.blocks[3] = 0;
 
-            int path_queue_start = 0;
-            int path_queue_end = 0;
+              int path_queue_start = 0;
+              int path_queue_end = 0;
 
-            const int start_flat = current_pos.y * BOARD_SIZE + current_pos.x;
-            const int target_flat = next_target.y * BOARD_SIZE + next_target.x;
+              const int start_flat = current_pos.y * BOARD_SIZE + current_pos.x;
+              const int target_flat = next_target.y * BOARD_SIZE + next_target.x;
 
-            path_queue[path_queue_end++] = current_pos;
-            path_visited.set(start_flat);
+              path_queue[path_queue_end++] = current_pos;
+              path_visited.set(start_flat);
 
-            bool target_found = false;
+              bool target_found = false;
 
-            // Search adjacent segments.
-            while (path_queue_start < path_queue_end && !target_found) {
-              const hebi::Point search_pos = path_queue[path_queue_start++];
-              const int search_flat = search_pos.y * BOARD_SIZE + search_pos.x;
+              // Search adjacent segments.
+              while (path_queue_start < path_queue_end && !target_found) {
+                const hebi::Point search_pos = path_queue[path_queue_start++];
+                const int search_flat = search_pos.y * BOARD_SIZE + search_pos.x;
 
-              // Evaluate neighbors.
-              for (int direction = 0; direction < 4; ++direction) {
-                const int hx = search_pos.x + hebi::dx(static_cast<hebi::Direction>(direction));
-                const int hy = search_pos.y + hebi::dy(static_cast<hebi::Direction>(direction));
+                // Evaluate neighbors.
+                for (int direction = 0; direction < 4; ++direction) {
+                  const int neighbor_x = search_pos.x + hebi::dx(static_cast<hebi::Direction>(direction));
+                  const int neighbor_y = search_pos.y + hebi::dy(static_cast<hebi::Direction>(direction));
 
-                if (static_cast<unsigned>(hx) < U_BOARD_SIZE && static_cast<unsigned>(hy) < U_BOARD_SIZE) {
-                  const int neighbor_flat = hy * BOARD_SIZE + hx;
+                  if (static_cast<unsigned>(neighbor_x) < U_BOARD_SIZE && static_cast<unsigned>(neighbor_y) < U_BOARD_SIZE) {
+                    const int neighbor_flat = neighbor_y * BOARD_SIZE + neighbor_x;
 
-                  if (neighbor_flat == target_flat) {
-                    parent_idx[neighbor_flat] = search_flat;
-                    target_found = true;
-                    break;
-                  }
+                    if (neighbor_flat == target_flat) {
+                      parent_idx[neighbor_flat] = search_flat;
+                      target_found = true;
+                      break;
+                    }
 
-                  if (!path_visited.get(neighbor_flat) && !invalid_mask.get(neighbor_flat)) {
-                    path_visited.set(neighbor_flat);
-                    parent_idx[neighbor_flat] = search_flat;
-                    path_queue[path_queue_end++] = {hx, hy};
+                    if (!path_visited.get(neighbor_flat) && !invalid_mask.get(neighbor_flat)) {
+                      path_visited.set(neighbor_flat);
+                      parent_idx[neighbor_flat] = search_flat;
+                      path_queue[path_queue_end++] = {neighbor_x, neighbor_y};
+                    }
                   }
                 }
               }
-            }
 
-            if (target_found) {
-              // Reconstruct gap path.
-              hebi::Point trace_pos = next_target;
-              int path_length = 0;
+              if (target_found) {
+                // Reconstruct gap path.
+                hebi::Point trace_pos = next_target;
+                int path_length = 0;
 
-              while (trace_pos.x != current_pos.x || trace_pos.y != current_pos.y) {
-                reverse_path[path_length++] = trace_pos;
-                const int trace_flat = trace_pos.y * BOARD_SIZE + trace_pos.x;
-                const int parent_flat = parent_idx[trace_flat];
-                trace_pos = {parent_flat % BOARD_SIZE, parent_flat / BOARD_SIZE};
-              }
+                while (trace_pos.x != current_pos.x || trace_pos.y != current_pos.y) {
+                  reverse_path[path_length++] = trace_pos;
+                  const int trace_flat = trace_pos.y * BOARD_SIZE + trace_pos.x;
+                  const int parent_flat = parent_idx[trace_flat];
+                  trace_pos = {parent_flat % BOARD_SIZE, parent_flat / BOARD_SIZE};
+                }
 
-              for (int path_index = path_length - 1; path_index >= 0; --path_index) {
-                current_pos = reverse_path[path_index];
-                current_logical_index++;
-                segments_to_write[write_count] = current_pos;
-                logical_indices[write_count] = current_logical_index;
-                write_count++;
+                for (int path_index = path_length - 1; path_index >= 0; --path_index) {
+                  current_pos = reverse_path[path_index];
+                  current_logical_index++;
+                  segments_to_write[write_count] = current_pos;
+                  logical_indices[write_count] = current_logical_index;
+                  write_count++;
+                }
               }
             }
           }
@@ -315,12 +319,12 @@ void StateProcessor::extract_safe_moves(int32_t* memory_map_out, bool* safe_move
 
         // Evaluate tail candidates.
         const auto check_virtual_tail = [&](int direction) __attribute__((always_inline)) {
-          const int tx = current_pos.x + hebi::dx(static_cast<hebi::Direction>(direction));
-          const int ty = current_pos.y + hebi::dy(static_cast<hebi::Direction>(direction));
+          const int virtual_tail_x = current_pos.x + hebi::dx(static_cast<hebi::Direction>(direction));
+          const int virtual_tail_y = current_pos.y + hebi::dy(static_cast<hebi::Direction>(direction));
 
           // Check boundaries.
-          if (static_cast<unsigned>(tx) < U_BOARD_SIZE && static_cast<unsigned>(ty) < U_BOARD_SIZE) {
-            const int flat_index = ty * BOARD_SIZE + tx;
+          if (static_cast<unsigned>(virtual_tail_x) < U_BOARD_SIZE && static_cast<unsigned>(virtual_tail_y) < U_BOARD_SIZE) {
+            const int flat_index = virtual_tail_y * BOARD_SIZE + virtual_tail_x;
 
             // Check cell validity.
             if (!invalid_mask.get(flat_index)) {
@@ -329,9 +333,9 @@ void StateProcessor::extract_safe_moves(int32_t* memory_map_out, bool* safe_move
               if (current_dist < min_dist_to_you) {
                 min_dist_to_you = current_dist;
                 tail_count = 0;
-                valid_tails[tail_count++] = {tx, ty};
+                valid_tails[tail_count++] = {virtual_tail_x, virtual_tail_y};
               } else if (current_dist == min_dist_to_you) {
-                valid_tails[tail_count++] = {tx, ty};
+                valid_tails[tail_count++] = {virtual_tail_x, virtual_tail_y};
               }
             }
           }
@@ -351,26 +355,28 @@ void StateProcessor::extract_safe_moves(int32_t* memory_map_out, bool* safe_move
         }
       }
 
-      // Map reconstructed body.
-      const int total_logical_steps = current_logical_index + 1;
+      // Map obstacles.
+      {
+        const int total_logical_steps = current_logical_index + 1;
 
-      for (int write_index = 0; write_index < write_count; ++write_index) {
-        const hebi::Point segment_pos = segments_to_write[write_index];
+        for (int write_index = 0; write_index < write_count; ++write_index) {
+          const hebi::Point segment_pos = segments_to_write[write_index];
 
-        // Check boundaries.
-        if (static_cast<unsigned>(segment_pos.x) < U_BOARD_SIZE && static_cast<unsigned>(segment_pos.y) < U_BOARD_SIZE) {
-          const int flat_index = segment_pos.y * BOARD_SIZE + segment_pos.x;
-          obstacles.set(flat_index);
+          // Check boundaries.
+          if (static_cast<unsigned>(segment_pos.x) < U_BOARD_SIZE && static_cast<unsigned>(segment_pos.y) < U_BOARD_SIZE) {
+            const int flat_index = segment_pos.y * BOARD_SIZE + segment_pos.x;
+            obstacles.set(flat_index);
 
-          const int time_to_clear = total_logical_steps - logical_indices[write_index];
+            const int time_to_clear = total_logical_steps - logical_indices[write_index];
 
-          // Track segment expiration.
-          if (time_to_clear > clear_time_grid[flat_index]) {
-            clear_time_grid[flat_index] = time_to_clear;
-          }
+            // Track segment expiration.
+            if (time_to_clear > clear_time_grid[flat_index]) {
+              clear_time_grid[flat_index] = time_to_clear;
+            }
 
-          if (logical_indices[write_index] == current_logical_index) {
-            enemy_tail_grid.set(flat_index);
+            if (logical_indices[write_index] == current_logical_index) {
+              enemy_tail_grid.set(flat_index);
+            }
           }
         }
       }
@@ -394,15 +400,15 @@ void StateProcessor::extract_safe_moves(int32_t* memory_map_out, bool* safe_move
               // Evaluate adjacent cells.
               const hebi::Point check_position = segments_to_write[write_index];
               const auto check_hidden_memory = [&](int direction) __attribute__((always_inline)) {
-                const int nx = check_position.x + hebi::dx(static_cast<hebi::Direction>(direction));
-                const int ny = check_position.y + hebi::dy(static_cast<hebi::Direction>(direction));
+                const int neighbor_x = check_position.x + hebi::dx(static_cast<hebi::Direction>(direction));
+                const int neighbor_y = check_position.y + hebi::dy(static_cast<hebi::Direction>(direction));
 
-                if (static_cast<unsigned>(nx) < U_BOARD_SIZE && static_cast<unsigned>(ny) < U_BOARD_SIZE) {
-                  const int n_flat = ny * BOARD_SIZE + nx;
-                  const bool n_visible = (LUTS.visibility_bits[head_flat][n_flat >> 6] & (1ULL << (n_flat & 63))) != 0;
+                if (static_cast<unsigned>(neighbor_x) < U_BOARD_SIZE && static_cast<unsigned>(neighbor_y) < U_BOARD_SIZE) {
+                  const int neighbor_flat = neighbor_y * BOARD_SIZE + neighbor_x;
+                  const bool is_neighbor_visible = (LUTS.visibility_bits[head_flat][neighbor_flat >> 6] & (1ULL << (neighbor_flat & 63))) != 0;
 
-                  if (!n_visible && memory_map_out[n_flat] > source_memory) {
-                    source_memory = memory_map_out[n_flat];
+                  if (!is_neighbor_visible && memory_map_out[neighbor_flat] > source_memory) {
+                    source_memory = memory_map_out[neighbor_flat];
                   }
                 }
               };
@@ -483,104 +489,107 @@ void StateProcessor::extract_safe_moves(int32_t* memory_map_out, bool* safe_move
     }
   }
 
-  // Move evaluation state.
-  alignas(32) int step_grid[CELLS_COUNT] = {0};
-  SearchState queue[CELLS_COUNT];
-
-  // Reset evaluations.
+  // Evaluate moves.
   MoveEvaluation evaluations[4];
 
-  for (int move_idx = 0; move_idx < 4; ++move_idx) {
-    evaluations[move_idx] = {false, false, false, false, 0};
-  }
+  {
+    // Move evaluation state.
+    alignas(32) int step_grid[CELLS_COUNT] = {0};
+    SearchState queue[CELLS_COUNT];
 
-  // Evaluate directional moves.
-  for (int move_idx = 0; move_idx < 4; ++move_idx) {
-    const hebi::Direction dir = static_cast<hebi::Direction>(move_idx);
-    const int next_x = head.x + hebi::dx(dir);
-    const int next_y = head.y + hebi::dy(dir);
+    // Reset evaluations.
+    for (int move_idx = 0; move_idx < 4; ++move_idx) {
+      evaluations[move_idx] = {false, false, false, false, 0};
+    }
 
-    // Check basic collisions.
-    if (static_cast<unsigned>(next_x) < U_BOARD_SIZE && static_cast<unsigned>(next_y) < U_BOARD_SIZE) {
-      const int target_idx = next_y * BOARD_SIZE + next_x;
-      evaluations[move_idx].is_accessible = !obstacles.get(target_idx);
-      evaluations[move_idx].is_enemy_head = enemy_head_grid.get(target_idx);
-      evaluations[move_idx].is_enemy_tail = enemy_tail_grid.get(target_idx);
+    // Evaluate directional moves.
+    for (int move_idx = 0; move_idx < 4; ++move_idx) {
+      const hebi::Direction dir = static_cast<hebi::Direction>(move_idx);
+      const int next_x = head.x + hebi::dx(dir);
+      const int next_y = head.y + hebi::dy(dir);
 
-      if (evaluations[move_idx].is_accessible) {
-        // Reset search state.
-        Bitboard path_visited;
-        path_visited.blocks[0] = 0;
-        path_visited.blocks[1] = 0;
-        path_visited.blocks[2] = 0;
-        path_visited.blocks[3] = 0;
+      // Check basic collisions.
+      if (static_cast<unsigned>(next_x) < U_BOARD_SIZE && static_cast<unsigned>(next_y) < U_BOARD_SIZE) {
+        const int target_idx = next_y * BOARD_SIZE + next_x;
+        evaluations[move_idx].is_accessible = !obstacles.get(target_idx);
+        evaluations[move_idx].is_enemy_head = enemy_head_grid.get(target_idx);
+        evaluations[move_idx].is_enemy_tail = enemy_tail_grid.get(target_idx);
 
-        int queue_start = 0;
-        int queue_end = 0;
+        if (evaluations[move_idx].is_accessible) {
+          // Reset search state.
+          Bitboard path_visited;
+          path_visited.blocks[0] = 0;
+          path_visited.blocks[1] = 0;
+          path_visited.blocks[2] = 0;
+          path_visited.blocks[3] = 0;
 
-        // Initialize spatial search.
-        int initial_food = food_grid.get(target_idx) ? 1 : 0;
-        queue[queue_end++] = {{next_x, next_y}, initial_food};
-        path_visited.set(target_idx);
-        step_grid[target_idx] = 1;
-        int reachable_count = 0;
+          int queue_start = 0;
+          int queue_end = 0;
 
-        // Detect tail chase.
-        bool can_tail_chase = player_body_grid.get(target_idx);
+          // Initialize spatial search.
+          int initial_food = food_grid.get(target_idx) ? 1 : 0;
+          queue[queue_end++] = {{next_x, next_y}, initial_food};
+          path_visited.set(target_idx);
+          step_grid[target_idx] = 1;
+          int reachable_count = 0;
 
-        // Calculate accessible space.
-        while (queue_start < queue_end && reachable_count < game_state_.you.length) {
-          SearchState current = queue[queue_start++];
-          const int current_idx = current.position.y * BOARD_SIZE + current.position.x;
-          int current_step = step_grid[current_idx];
-          reachable_count++;
+          // Detect tail chase.
+          bool can_tail_chase = player_body_grid.get(target_idx);
 
-          // Explore neighbors.
-          for (int neighbor_dir = 0; neighbor_dir < 4; ++neighbor_dir) {
-            int fill_x = current.position.x + hebi::dx(static_cast<hebi::Direction>(neighbor_dir));
-            int fill_y = current.position.y + hebi::dy(static_cast<hebi::Direction>(neighbor_dir));
+          // Calculate accessible space.
+          while (queue_start < queue_end && reachable_count < game_state_.you.length) {
+            SearchState current = queue[queue_start++];
+            const int current_idx = current.position.y * BOARD_SIZE + current.position.x;
+            int current_step = step_grid[current_idx];
+            reachable_count++;
 
-            if (static_cast<unsigned>(fill_x) < U_BOARD_SIZE && static_cast<unsigned>(fill_y) < U_BOARD_SIZE) {
-              const int neighbor_idx = fill_y * BOARD_SIZE + fill_x;
+            // Explore neighbors.
+            for (int neighbor_dir = 0; neighbor_dir < 4; ++neighbor_dir) {
+              int fill_x = current.position.x + hebi::dx(static_cast<hebi::Direction>(neighbor_dir));
+              int fill_y = current.position.y + hebi::dy(static_cast<hebi::Direction>(neighbor_dir));
 
-              if (!path_visited.get(neighbor_idx)) {
-                // Calculate segment expiration.
-                int effective_clear_time = clear_time_grid[neighbor_idx];
+              if (static_cast<unsigned>(fill_x) < U_BOARD_SIZE && static_cast<unsigned>(fill_y) < U_BOARD_SIZE) {
+                const int neighbor_idx = fill_y * BOARD_SIZE + fill_x;
 
-                if (player_body_grid.get(neighbor_idx)) {
-                  effective_clear_time += current.food_eaten;
-                }
+                if (!path_visited.get(neighbor_idx)) {
+                  // Calculate segment expiration.
+                  int effective_clear_time = clear_time_grid[neighbor_idx];
 
-                bool time_blocked = ((current_step + 1) < effective_clear_time);
-
-                // Expand search.
-                if (!time_blocked) {
-                  // Detect tail chase.
                   if (player_body_grid.get(neighbor_idx)) {
-                    can_tail_chase = true;
+                    effective_clear_time += current.food_eaten;
                   }
 
-                  path_visited.set(neighbor_idx);
-                  step_grid[neighbor_idx] = current_step + 1;
-                  int next_food_count = current.food_eaten + (food_grid.get(neighbor_idx) ? 1 : 0);
-                  queue[queue_end++] = {{fill_x, fill_y}, next_food_count};
+                  bool time_blocked = ((current_step + 1) < effective_clear_time);
+
+                  // Expand search.
+                  if (!time_blocked) {
+                    // Detect tail chase.
+                    if (player_body_grid.get(neighbor_idx)) {
+                      can_tail_chase = true;
+                    }
+
+                    path_visited.set(neighbor_idx);
+                    step_grid[neighbor_idx] = current_step + 1;
+                    int next_food_count = current.food_eaten + (food_grid.get(neighbor_idx) ? 1 : 0);
+                    queue[queue_end++] = {{fill_x, fill_y}, next_food_count};
+                  }
                 }
               }
             }
           }
-        }
 
-        evaluations[move_idx].is_space_sufficient = false;
-        evaluations[move_idx].reachable_max_space = reachable_count;
+          evaluations[move_idx].is_space_sufficient = false;
+          evaluations[move_idx].reachable_max_space = reachable_count;
 
-        // Evaluate space sufficiency.
-        if (reachable_count >= game_state_.you.length || can_tail_chase) {
-          evaluations[move_idx].is_space_sufficient = true;
-        }
+          // Evaluate space sufficiency.
+          if (reachable_count >= game_state_.you.length || can_tail_chase) {
+            evaluations[move_idx].is_space_sufficient = true;
+          }
 
-        // Confirm safe direction.
-        if (evaluations[move_idx].is_space_sufficient && !evaluations[move_idx].is_enemy_head) {
-          safe_moves_out[move_idx] = true;
+          // Confirm safe direction.
+          if (evaluations[move_idx].is_space_sufficient && !evaluations[move_idx].is_enemy_head) {
+            safe_moves_out[move_idx] = true;
+          }
         }
       }
     }
