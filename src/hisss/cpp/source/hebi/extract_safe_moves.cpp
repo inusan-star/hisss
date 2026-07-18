@@ -142,29 +142,33 @@ void StateProcessor::extract_safe_moves(int32_t* memory_map_out, bool* safe_move
       }
     }
 
-    const bool is_disadvantaged = (snake.length >= game_state_.you.length);
-
     // Restrict enemy head neighbors.
-    if (snake.body.front().has_value() && (has_null_segment || is_disadvantaged)) {
+    if (snake.body.front().has_value()) {
       const hebi::Point enemy_head = snake.body.front().value();
+      const int enemy_head_flat = enemy_head.y * BOARD_SIZE + enemy_head.x;
 
-      const auto add_enemy_head_grid = [&](int direction) __attribute__((always_inline)) {
-        const int adjacent_head_x = enemy_head.x + hebi::dx(static_cast<hebi::Direction>(direction));
-        const int adjacent_head_y = enemy_head.y + hebi::dy(static_cast<hebi::Direction>(direction));
+      const int effective_enemy_length = snake.length + ((memory_map_out[enemy_head_flat] & (1 << 16)) ? 1 : 0);
+      const bool is_disadvantaged = (effective_enemy_length >= game_state_.you.length);
 
-        if (static_cast<unsigned>(adjacent_head_x) < U_BOARD_SIZE && static_cast<unsigned>(adjacent_head_y) < U_BOARD_SIZE) {
-          const int adj_flat_index = adjacent_head_y * BOARD_SIZE + adjacent_head_x;
+      if (has_null_segment || is_disadvantaged) {
+        const auto add_enemy_head_grid = [&](int direction) __attribute__((always_inline)) {
+          const int adjacent_head_x = enemy_head.x + hebi::dx(static_cast<hebi::Direction>(direction));
+          const int adjacent_head_y = enemy_head.y + hebi::dy(static_cast<hebi::Direction>(direction));
 
-          if (!player_body_grid.get(adj_flat_index)) {
-            enemy_head_grid.set(adj_flat_index);
+          if (static_cast<unsigned>(adjacent_head_x) < U_BOARD_SIZE && static_cast<unsigned>(adjacent_head_y) < U_BOARD_SIZE) {
+            const int adj_flat_index = adjacent_head_y * BOARD_SIZE + adjacent_head_x;
+
+            if (!player_body_grid.get(adj_flat_index)) {
+              enemy_head_grid.set(adj_flat_index);
+            }
           }
-        }
-      };
+        };
 
-      add_enemy_head_grid(0);
-      add_enemy_head_grid(1);
-      add_enemy_head_grid(2);
-      add_enemy_head_grid(3);
+        add_enemy_head_grid(0);
+        add_enemy_head_grid(1);
+        add_enemy_head_grid(2);
+        add_enemy_head_grid(3);
+      }
     }
 
     // Locate visible segment bounds.
@@ -190,6 +194,7 @@ void StateProcessor::extract_safe_moves(int32_t* memory_map_out, bool* safe_move
       alignas(16) int logical_indices[CELLS_COUNT * 2];
       int write_count = 0;
       int current_logical_index = 0;
+      int enemy_food_eaten = 0;
 
       // Predict hidden enemy head.
       if (!snake.body.front().has_value()) {
@@ -227,6 +232,13 @@ void StateProcessor::extract_safe_moves(int32_t* memory_map_out, bool* safe_move
           segments_to_write[write_count] = valid_heads[head_index];
           logical_indices[write_count] = current_logical_index;
           write_count++;
+
+          // Check for food consumption.
+          const int flat_index = valid_heads[head_index].y * BOARD_SIZE + valid_heads[head_index].x;
+
+          if (memory_map_out[flat_index] & (1 << 16)) {
+            enemy_food_eaten = 1;
+          }
         }
 
         if (head_count > 0) current_pos = valid_heads[0];
@@ -234,6 +246,13 @@ void StateProcessor::extract_safe_moves(int32_t* memory_map_out, bool* safe_move
         segments_to_write[write_count] = current_pos;
         logical_indices[write_count] = current_logical_index;
         write_count++;
+
+        // Check for food consumption.
+        const int flat_index = current_pos.y * BOARD_SIZE + current_pos.x;
+
+        if (memory_map_out[flat_index] & (1 << 16)) {
+          enemy_food_eaten = 1;
+        }
       }
 
       // Predict hidden enemy body.
@@ -367,7 +386,7 @@ void StateProcessor::extract_safe_moves(int32_t* memory_map_out, bool* safe_move
 
       // Map obstacles.
       {
-        const int total_logical_steps = current_logical_index + 1;
+        const int total_logical_steps = current_logical_index + 1 + enemy_food_eaten;
 
         for (int write_index = 0; write_index < write_count; ++write_index) {
           const hebi::Point segment_pos = segments_to_write[write_index];
@@ -404,7 +423,7 @@ void StateProcessor::extract_safe_moves(int32_t* memory_map_out, bool* safe_move
 
           // Detect transition .
           if (is_current_visible && !is_next_visible) {
-            int source_memory = memory_map_out[next_flat_index];
+            int source_memory = memory_map_out[next_flat_index] & 0xFFFF;
 
             if (source_memory == 0) {
               // Evaluate adjacent cells.
@@ -417,8 +436,8 @@ void StateProcessor::extract_safe_moves(int32_t* memory_map_out, bool* safe_move
                   const int neighbor_flat = neighbor_y * BOARD_SIZE + neighbor_x;
                   const bool is_neighbor_visible = (LUTS.visibility_bits[head_flat][neighbor_flat >> 6] & (1ULL << (neighbor_flat & 63))) != 0;
 
-                  if (!is_neighbor_visible && memory_map_out[neighbor_flat] > source_memory) {
-                    source_memory = memory_map_out[neighbor_flat];
+                  if (!is_neighbor_visible && (memory_map_out[neighbor_flat] & 0xFFFF) > source_memory) {
+                    source_memory = memory_map_out[neighbor_flat] & 0xFFFF;
                   }
                 }
               };
@@ -458,9 +477,12 @@ void StateProcessor::extract_safe_moves(int32_t* memory_map_out, bool* safe_move
     for (int cell_index = 0; cell_index < CELLS_COUNT; ++cell_index) {
       const bool is_visible = (LUTS.visibility_bits[head_flat][cell_index >> 6] & (1ULL << (cell_index & 63))) != 0;
       int final_time = clear_time_grid[cell_index];
+      const int past_packed = memory_map_out[cell_index];
+      const int past_time = past_packed & 0xFFFF;
+      const bool past_food = (past_packed & (1 << 16)) != 0;
 
       if (!is_visible) {
-        int past_memory = memory_map_out[cell_index];
+        int past_memory = past_time;
         past_memory = (past_memory > 0) ? past_memory - 1 : 0;
 
         if (past_memory > final_time) {
@@ -468,7 +490,17 @@ void StateProcessor::extract_safe_moves(int32_t* memory_map_out, bool* safe_move
         }
       }
 
-      memory_map_out[cell_index] = final_time;
+      bool next_food = false;
+
+      if (food_grid.get(cell_index)) {
+        next_food = true;
+      } else if (!is_visible) {
+        next_food = past_food;
+      } else {
+        next_food = false;
+      }
+
+      memory_map_out[cell_index] = final_time | (next_food ? (1 << 16) : 0);
 
       if (final_time > 0) {
         obstacles.set(cell_index);
