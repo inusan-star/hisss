@@ -547,7 +547,7 @@ void StateProcessor::extract_safe_moves(int32_t* memory_map_out, bool* safe_move
     };
 
     // Initialize BFS.
-    EnemySearchState enemy_queue[CELLS_COUNT];
+    EnemySearchState enemy_queue[CELLS_COUNT * 2];
     int enemy_queue_start = 0;
     int enemy_queue_end = 0;
 
