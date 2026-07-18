@@ -147,7 +147,11 @@ void StateProcessor::extract_safe_moves(int32_t* memory_map_out, bool* safe_move
         const int adjacent_head_y = enemy_head.y + hebi::dy(static_cast<hebi::Direction>(direction));
 
         if (static_cast<unsigned>(adjacent_head_x) < U_BOARD_SIZE && static_cast<unsigned>(adjacent_head_y) < U_BOARD_SIZE) {
-          enemy_head_grid.set(adjacent_head_y * BOARD_SIZE + adjacent_head_x);
+          const int adj_flat_index = adjacent_head_y * BOARD_SIZE + adjacent_head_x;
+
+          if (!player_body_grid.get(adj_flat_index)) {
+            enemy_head_grid.set(adj_flat_index);
+          }
         }
       };
 
