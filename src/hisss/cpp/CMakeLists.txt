@@ -28,6 +28,7 @@ set(PROJECT_SOURCES
     source/hebi/extract_safe_moves.cpp
     source/hebi/encode_policy_features.cpp
     source/hebi/encode_value_features.cpp
+    source/hebi/pbrs.cpp
 )
 
 add_library(link SHARED ${PROJECT_SOURCES} ${ALGLIB_SOURCES})

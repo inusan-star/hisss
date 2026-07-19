@@ -225,6 +225,17 @@ class CPPLibrary:
         ]
         self.lib.process_state_cpp.restype = None
 
+        self.lib.compute_pbrs_cpp.argtypes = [
+            ct.c_int,
+            np.ctypeslib.ndpointer(dtype=np.int32, ndim=1, flags="C_CONTIGUOUS"),
+            np.ctypeslib.ndpointer(dtype=np.int32, ndim=1, flags="C_CONTIGUOUS"),
+            np.ctypeslib.ndpointer(dtype=np.int32, ndim=1, flags="C_CONTIGUOUS"),
+            np.ctypeslib.ndpointer(dtype=bool, ndim=1, flags="C_CONTIGUOUS"),
+            np.ctypeslib.ndpointer(dtype=bool, ndim=1, flags="C_CONTIGUOUS"),
+            np.ctypeslib.ndpointer(dtype=np.float32, ndim=1, flags="C_CONTIGUOUS"),
+        ]
+        self.lib.compute_pbrs_cpp.restype = None
+
     def get_area_control(
         self,
         num_snakes: int,
