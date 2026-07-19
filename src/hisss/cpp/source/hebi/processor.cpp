@@ -22,8 +22,8 @@ void process_state_cpp(int32_t* memory_map_out, const char* partial_state_json, 
     partial_processor.extract_safe_moves(memory_map_out, safe_moves_out);
   }
 
-  if (policy_features_out != nullptr) {
-    partial_processor.encode_policy_features(policy_features_out);
+  if (memory_map_out != nullptr && policy_features_out != nullptr && safe_moves_out != nullptr) {
+    partial_processor.encode_policy_features(memory_map_out, policy_features_out, safe_moves_out);
   }
 
   if (value_features_out != nullptr) {

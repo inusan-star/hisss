@@ -342,11 +342,11 @@ class CPPLibrary:
 
         if features_flag:
             board_size = self.lib.get_board_size_cpp()
-            policy_features_out = np.zeros((9, board_size, board_size), dtype=np.float32)
+            policy_features_out = np.zeros((69, board_size, board_size), dtype=np.float32)
             policy_features_p = policy_features_out.ctypes.data_as(ct.POINTER(ct.c_float))
 
             if perfect_state_json is not None:
-                value_features_out = np.zeros((8, board_size, board_size), dtype=np.float32)
+                value_features_out = np.zeros((85, board_size, board_size), dtype=np.float32)
                 value_features_p = value_features_out.ctypes.data_as(ct.POINTER(ct.c_float))
 
         memory_map_p = memory_map.ctypes.data_as(ct.POINTER(ct.c_int32))
