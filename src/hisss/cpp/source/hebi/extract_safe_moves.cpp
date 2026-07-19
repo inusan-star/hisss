@@ -751,7 +751,7 @@ void StateProcessor::extract_safe_moves(int32_t* memory_map_out, bool* safe_move
         const auto& eval = evaluations[move_idx];
 
         // Skip inaccessible moves.
-        if (!eval.is_accessible) {
+        if (!eval.is_accessible && !eval.is_enemy_tail) {
           continue;
         }
 
