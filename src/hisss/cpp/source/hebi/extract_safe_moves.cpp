@@ -501,7 +501,8 @@ void StateProcessor::extract_safe_moves(int32_t* memory_map_out, bool* safe_move
           next_food = false;
         }
 
-        memory_map_out[cell_index] = final_time | (next_food ? (1 << 16) : 0);
+        const int persistent_data = past_packed & static_cast<int>(0xFFFE0000u);
+        memory_map_out[cell_index] = persistent_data | final_time | (next_food ? (1 << 16) : 0);
 
         if (final_time > 0) {
           obstacles.set(cell_index);

@@ -26,9 +26,9 @@ void process_state_cpp(int32_t* memory_map_out, const char* partial_state_json, 
     partial_processor.encode_policy_features(memory_map_out, policy_features_out, safe_moves_out);
   }
 
-  if (value_features_out != nullptr) {
+  if (memory_map_out != nullptr && value_features_out != nullptr) {
     StateProcessor perfect_processor(perfect_state_json);
-    perfect_processor.encode_value_features(value_features_out);
+    perfect_processor.encode_value_features(memory_map_out, value_features_out);
   }
 }
 }

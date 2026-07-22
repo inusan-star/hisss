@@ -16,8 +16,8 @@ class StateProcessor {
   explicit StateProcessor(const char* state_json);
 
   void extract_safe_moves(int32_t* memory_map_out, bool* safe_moves_out) const;
-  void encode_policy_features(const int32_t* memory_map, float* features_out, const bool* safe_moves) const;
-  void encode_value_features(float* features_out) const;
+  void encode_policy_features(int32_t* memory_map, float* features_out, const bool* safe_moves);
+  void encode_value_features(int32_t* memory_map, float* features_out);
 
  private:
   hebi::GameState game_state_;

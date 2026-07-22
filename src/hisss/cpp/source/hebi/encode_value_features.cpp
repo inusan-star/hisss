@@ -1,5 +1,7 @@
 #include <algorithm>
+#include <array>
 #include <cmath>
+#include <cstdint>
 #include <optional>
 #include <vector>
 
@@ -7,7 +9,87 @@
 
 namespace hebi {
 
-void StateProcessor::encode_value_features(float* features_out) const {
+static constexpr uint32_t MEMORY_DATA_MASK = 0x0001FFFFu;
+static constexpr uint32_t ENEMY_SLOT_CHUNK_MASK = 0x00007FFFu;
+static constexpr uint32_t ENEMY_SLOT_KEY_MASK = 0x3FFFFFFFu;
+static constexpr int ENEMY_SLOT_SHIFT = 17;
+static constexpr int ENEMY_SLOT_COUNT = 3;
+static constexpr int ENEMY_SLOT_CELLS = 2;
+
+static uint32_t get_enemy_slot_key(const hebi::Snake& snake) {
+  uint32_t hash = 2166136261u;
+
+  for (const unsigned char character : snake.id) {
+    hash ^= character;
+    hash *= 16777619u;
+  }
+
+  hash &= ENEMY_SLOT_KEY_MASK;
+
+  return hash == 0 ? 1u : hash;
+}
+
+static uint32_t read_enemy_slot_key(const int32_t* memory_map, int slot) {
+  const int first_cell = slot * ENEMY_SLOT_CELLS;
+  const uint32_t lower_chunk = (static_cast<uint32_t>(memory_map[first_cell]) >> ENEMY_SLOT_SHIFT) & ENEMY_SLOT_CHUNK_MASK;
+  const uint32_t upper_chunk = (static_cast<uint32_t>(memory_map[first_cell + 1]) >> ENEMY_SLOT_SHIFT) & ENEMY_SLOT_CHUNK_MASK;
+
+  return lower_chunk | (upper_chunk << 15);
+}
+
+static void write_enemy_slot_key(int32_t* memory_map, int slot, uint32_t key) {
+  const int first_cell = slot * ENEMY_SLOT_CELLS;
+
+  const uint32_t lower_chunk = key & ENEMY_SLOT_CHUNK_MASK;
+  const uint32_t upper_chunk = (key >> 15) & ENEMY_SLOT_CHUNK_MASK;
+
+  memory_map[first_cell] =
+      static_cast<int32_t>((static_cast<uint32_t>(memory_map[first_cell]) & MEMORY_DATA_MASK) | (lower_chunk << ENEMY_SLOT_SHIFT));
+  memory_map[first_cell + 1] =
+      static_cast<int32_t>((static_cast<uint32_t>(memory_map[first_cell + 1]) & MEMORY_DATA_MASK) | (upper_chunk << ENEMY_SLOT_SHIFT));
+}
+
+static std::array<const hebi::Snake*, ENEMY_SLOT_COUNT> resolve_enemy_slots(const std::vector<const hebi::Snake*>& enemies, int32_t* memory_map,
+                                                                            int turn) {
+  std::array<const hebi::Snake*, ENEMY_SLOT_COUNT> enemy_slots = {nullptr, nullptr, nullptr};
+  uint32_t enemy_slot_keys[ENEMY_SLOT_COUNT] = {
+      read_enemy_slot_key(memory_map, 0),
+      read_enemy_slot_key(memory_map, 1),
+      read_enemy_slot_key(memory_map, 2),
+  };
+
+  bool has_initialized_slot = false;
+
+  for (int slot = 0; slot < ENEMY_SLOT_COUNT; ++slot) {
+    if (enemy_slot_keys[slot] != 0) {
+      has_initialized_slot = true;
+      break;
+    }
+  }
+
+  if (turn == 0 || !has_initialized_slot) {
+    for (int slot = 0; slot < ENEMY_SLOT_COUNT; ++slot) {
+      const uint32_t key = slot < static_cast<int>(enemies.size()) ? get_enemy_slot_key(*enemies[slot]) : 0u;
+      write_enemy_slot_key(memory_map, slot, key);
+      enemy_slot_keys[slot] = key;
+    }
+  }
+
+  for (const hebi::Snake* enemy : enemies) {
+    const uint32_t enemy_key = get_enemy_slot_key(*enemy);
+
+    for (int slot = 0; slot < ENEMY_SLOT_COUNT; ++slot) {
+      if (enemy_slot_keys[slot] == enemy_key) {
+        enemy_slots[slot] = enemy;
+        break;
+      }
+    }
+  }
+
+  return enemy_slots;
+}
+
+void StateProcessor::encode_value_features(int32_t* memory_map, float* features_out) {
   try {
     if (game_state_.you.elimination_event.has_value()) {
       return;
@@ -80,6 +162,8 @@ void StateProcessor::encode_value_features(float* features_out) const {
 
     std::sort(enemies.begin(), enemies.end(), [](const hebi::Snake* a, const hebi::Snake* b) { return a->id < b->id; });
 
+    const std::array<const hebi::Snake*, ENEMY_SLOT_COUNT> enemy_slots = resolve_enemy_slots(enemies, memory_map, game_state_.turn);
+
     float alive_count = 1.0f;
     bool is_longer_than_enemy[3] = {false, false, false};
     std::optional<hebi::Point> enemy_heads[3] = {std::nullopt, std::nullopt, std::nullopt};
@@ -97,7 +181,9 @@ void StateProcessor::encode_value_features(float* features_out) const {
       float* en_body_age_ptr = features_out + (base_ch + 7) * plane_size;
       float* en_alive_ptr = features_out + (base_ch + 8) * plane_size;
 
-      if (enemies[e]->elimination_event.has_value()) {
+      const hebi::Snake* enemy = enemy_slots[e];
+
+      if (enemy == nullptr || enemy->elimination_event.has_value()) {
         std::fill_n(en_head_ptr, plane_size, 0.0f);
         std::fill_n(en_body_ptr, plane_size, 0.0f);
         std::fill_n(en_tail_ptr, plane_size, 0.0f);
@@ -111,8 +197,6 @@ void StateProcessor::encode_value_features(float* features_out) const {
       }
 
       alive_count += 1.0f;
-
-      const hebi::Snake* enemy = enemies[e];
 
       is_longer_than_enemy[e] = (game_state_.you.length > enemy->length);
 
@@ -186,7 +270,9 @@ void StateProcessor::encode_value_features(float* features_out) const {
     bool is_longest = true;
 
     for (int e = 0; e < 3; ++e) {
-      if (!enemies[e]->elimination_event.has_value() && game_state_.you.length <= enemies[e]->length) {
+      const hebi::Snake* enemy = enemy_slots[e];
+
+      if (enemy != nullptr && !enemy->elimination_event.has_value() && game_state_.you.length <= enemy->length) {
         is_longest = false;
       }
     }
@@ -293,9 +379,11 @@ void StateProcessor::encode_value_features(float* features_out) const {
     float lengths[4] = {static_cast<float>(game_state_.you.length), 1.0f, 1.0f, 1.0f};
 
     for (int e = 0; e < 3; ++e) {
-      if (enemy_heads[e].has_value()) {
+      const hebi::Snake* enemy = enemy_slots[e];
+
+      if (enemy != nullptr && enemy_heads[e].has_value()) {
         do_bfs(e + 1, enemy_heads[e].value());
-        lengths[e + 1] = static_cast<float>(enemies[e]->length);
+        lengths[e + 1] = static_cast<float>(enemy->length);
       }
     }
 
