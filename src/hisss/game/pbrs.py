@@ -9,11 +9,11 @@ def compute_pbrs(state: BattleSnakeState) -> dict[int, float]:
     num_snakes = len(state.snakes_alive)
 
     # Setup.
-    alives = np.array(state.snakes_alive, dtype=bool)
-    lengths = np.array(state.snake_len, dtype=np.int32)
+    alives = np.ascontiguousarray(state.snakes_alive, dtype=np.bool_)
+    lengths = np.ascontiguousarray(state.snake_len, dtype=np.int32)
     heads_x = np.zeros(num_snakes, dtype=np.int32)
     heads_y = np.zeros(num_snakes, dtype=np.int32)
-    obstacle_grid = np.zeros(225, dtype=bool)
+    obstacle_grid = np.zeros(225, dtype=np.bool_)
     pbrs_out = np.zeros(num_snakes, dtype=np.float32)
 
     # Parse.
