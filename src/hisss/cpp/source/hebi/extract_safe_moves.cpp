@@ -91,7 +91,6 @@ void StateProcessor::extract_safe_moves(int32_t* memory_map_out, bool* safe_move
     Bitboard food_grid;
     Bitboard player_body_grid;
     Bitboard enemy_head_grid;
-    Bitboard dangerous_enemy_head_grid;
     Bitboard enemy_tail_grid;
     Bitboard obstacles;
     alignas(32) int clear_time_grid[CELLS_COUNT] = {0};
@@ -153,8 +152,6 @@ void StateProcessor::extract_safe_moves(int32_t* memory_map_out, bool* safe_move
         const bool is_disadvantaged = (effective_enemy_length >= game_state_.you.length);
 
         if (has_null_segment || is_disadvantaged) {
-          dangerous_enemy_head_grid.set(enemy_head_flat);
-
           const auto add_enemy_head_grid = [&](int direction) __attribute__((always_inline)) {
             const int adjacent_head_x = enemy_head.x + hebi::dx(static_cast<hebi::Direction>(direction));
             const int adjacent_head_y = enemy_head.y + hebi::dy(static_cast<hebi::Direction>(direction));
@@ -840,164 +837,6 @@ void StateProcessor::extract_safe_moves(int32_t* memory_map_out, bool* safe_move
         if (depth_found[depth]) {
           for (int move_idx = 0; move_idx < 4; ++move_idx) {
             safe_moves_out[move_idx] = cand_depth[depth][move_idx];
-          }
-
-          // Protect shortest tail paths from enemy entry.
-          {
-            const auto& tail = game_state_.you.body.back();
-
-            if (tail.has_value()) {
-              const hebi::Point tail_pos = tail.value();
-
-              if (static_cast<unsigned>(tail_pos.x) < U_BOARD_SIZE && static_cast<unsigned>(tail_pos.y) < U_BOARD_SIZE) {
-                const int tail_flat = tail_pos.y * BOARD_SIZE + tail_pos.x;
-                const int tail_manhattan_distance = LUTS.distance[head_flat][tail_flat];
-
-                if (tail_manhattan_distance > 0 && tail_manhattan_distance <= 10) {
-                  uint8_t rejected_head_mask = 0;
-
-                  for (int move_idx = 0; move_idx < 4; ++move_idx) {
-                    const auto& eval = evaluations[move_idx];
-
-                    if (eval.is_accessible && eval.is_enemy_head && eval.is_space_sufficient[depth]) {
-                      rejected_head_mask |= (1 << move_idx);
-                    }
-                  }
-
-                  if (rejected_head_mask != 0) {
-                    // Calculate shortest paths while ignoring opponents.
-                    alignas(32) int tail_distance[CELLS_COUNT];
-                    int tail_queue[CELLS_COUNT];
-                    int tail_queue_start = 0;
-                    int tail_queue_end = 0;
-                    int shortest_distance = (tail_manhattan_distance == 1) ? 0 : 9999;
-
-                    std::fill_n(tail_distance, CELLS_COUNT, -1);
-                    tail_distance[tail_flat] = 0;
-                    tail_queue[tail_queue_end++] = tail_flat;
-
-                    while (tail_queue_start < tail_queue_end) {
-                      const int current_flat = tail_queue[tail_queue_start++];
-
-                      if (tail_distance[current_flat] >= shortest_distance) {
-                        break;
-                      }
-
-                      const int current_x = current_flat % BOARD_SIZE;
-                      const int current_y = current_flat / BOARD_SIZE;
-
-                      for (int direction = 0; direction < 4; ++direction) {
-                        const int neighbor_x = current_x + hebi::dx(static_cast<hebi::Direction>(direction));
-                        const int neighbor_y = current_y + hebi::dy(static_cast<hebi::Direction>(direction));
-
-                        if (static_cast<unsigned>(neighbor_x) < U_BOARD_SIZE && static_cast<unsigned>(neighbor_y) < U_BOARD_SIZE) {
-                          const int neighbor_flat = neighbor_y * BOARD_SIZE + neighbor_x;
-
-                          if (tail_distance[neighbor_flat] == -1 && !player_body_grid.get(neighbor_flat)) {
-                            tail_distance[neighbor_flat] = tail_distance[current_flat] + 1;
-                            tail_queue[tail_queue_end++] = neighbor_flat;
-
-                            if (LUTS.distance[head_flat][neighbor_flat] == 1) {
-                              shortest_distance = tail_distance[neighbor_flat];
-                            }
-                          }
-                        }
-                      }
-                    }
-
-                    // Force one rejected move on a shortest path.
-                    for (int move_idx = 0; move_idx < 4; ++move_idx) {
-                      const int next_x = head.x + hebi::dx(static_cast<hebi::Direction>(move_idx));
-                      const int next_y = head.y + hebi::dy(static_cast<hebi::Direction>(move_idx));
-
-                      if ((rejected_head_mask & (1 << move_idx)) && tail_distance[next_y * BOARD_SIZE + next_x] == shortest_distance) {
-                        safe_moves_out[0] = false;
-                        safe_moves_out[1] = false;
-                        safe_moves_out[2] = false;
-                        safe_moves_out[3] = false;
-                        safe_moves_out[move_idx] = true;
-                        break;
-                      }
-                    }
-                  }
-                }
-              }
-            }
-          }
-
-          // Force a head-to-head against a trapped enemy.
-          {
-            uint8_t rejected_head_mask = 0;
-
-            for (int move_idx = 0; move_idx < 4; ++move_idx) {
-              const auto& eval = evaluations[move_idx];
-
-              if (eval.is_accessible && eval.is_enemy_head && eval.is_space_sufficient[0]) {
-                rejected_head_mask |= (1 << move_idx);
-              }
-            }
-
-            int forced_h2h_move = -1;
-
-            for (const auto& snake : game_state_.board.snakes) {
-              if (rejected_head_mask == 0 || forced_h2h_move != -1 || snake.id == game_state_.you.id || snake.elimination_event.has_value() ||
-                  snake.body.empty() || !snake.body.front().has_value()) {
-                continue;
-              }
-
-              const hebi::Point enemy_head = snake.body.front().value();
-
-              if (static_cast<unsigned>(enemy_head.x) >= U_BOARD_SIZE || static_cast<unsigned>(enemy_head.y) >= U_BOARD_SIZE) {
-                continue;
-              }
-
-              const int enemy_head_flat = enemy_head.y * BOARD_SIZE + enemy_head.x;
-
-              if (!dangerous_enemy_head_grid.get(enemy_head_flat)) {
-                continue;
-              }
-
-              int forced_target_flat = -1;
-              int available_move_count = 0;
-
-              for (int direction = 0; direction < 4; ++direction) {
-                const int next_x = enemy_head.x + hebi::dx(static_cast<hebi::Direction>(direction));
-                const int next_y = enemy_head.y + hebi::dy(static_cast<hebi::Direction>(direction));
-
-                if (static_cast<unsigned>(next_x) < U_BOARD_SIZE && static_cast<unsigned>(next_y) < U_BOARD_SIZE) {
-                  const int next_flat = next_y * BOARD_SIZE + next_x;
-
-                  if (clear_time_grid[next_flat] <= 1) {
-                    forced_target_flat = next_flat;
-                    available_move_count++;
-
-                    if (available_move_count > 1) {
-                      break;
-                    }
-                  }
-                }
-              }
-
-              if (available_move_count == 1) {
-                for (int move_idx = 0; move_idx < 4; ++move_idx) {
-                  const int next_x = head.x + hebi::dx(static_cast<hebi::Direction>(move_idx));
-                  const int next_y = head.y + hebi::dy(static_cast<hebi::Direction>(move_idx));
-
-                  if ((rejected_head_mask & (1 << move_idx)) && next_y * BOARD_SIZE + next_x == forced_target_flat) {
-                    forced_h2h_move = move_idx;
-                    break;
-                  }
-                }
-              }
-            }
-
-            if (forced_h2h_move != -1) {
-              safe_moves_out[0] = false;
-              safe_moves_out[1] = false;
-              safe_moves_out[2] = false;
-              safe_moves_out[3] = false;
-              safe_moves_out[forced_h2h_move] = true;
-            }
           }
 
           selected = true;
