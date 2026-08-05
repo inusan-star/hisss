@@ -14,7 +14,7 @@ static constexpr int VIEW_RADIUS = 5;
 static constexpr int CELLS_COUNT = BOARD_SIZE * BOARD_SIZE;
 
 // Prediction configuration.
-static constexpr int MAX_PREDICTION_DEPTH = 3;
+static constexpr int MAX_PREDICTION_DEPTH = 5;
 static constexpr int DEPTH_LEVELS = MAX_PREDICTION_DEPTH + 1;
 
 // Spatial grid.
@@ -159,9 +159,7 @@ void StateProcessor::extract_safe_moves(int32_t* memory_map_out, bool* safe_move
             if (static_cast<unsigned>(adjacent_head_x) < U_BOARD_SIZE && static_cast<unsigned>(adjacent_head_y) < U_BOARD_SIZE) {
               const int adj_flat_index = adjacent_head_y * BOARD_SIZE + adjacent_head_x;
 
-              if (!player_body_grid.get(adj_flat_index)) {
-                enemy_head_grid.set(adj_flat_index);
-              }
+              enemy_head_grid.set(adj_flat_index);
             }
           };
 
@@ -603,7 +601,8 @@ void StateProcessor::extract_safe_moves(int32_t* memory_map_out, bool* safe_move
       const int my_length = game_state_.you.length;
       const uint16_t full_depth_mask = static_cast<uint16_t>((1 << DEPTH_LEVELS) - 1);
       alignas(32) uint16_t reached_mask[CELLS_COUNT] = {0};
-      SearchState queue[CELLS_COUNT * DEPTH_LEVELS];
+      std::vector<SearchState> queue;
+      queue.reserve(CELLS_COUNT * DEPTH_LEVELS);
 
       // Reset evaluations.
       for (int move_idx = 0; move_idx < 4; ++move_idx) {
@@ -631,24 +630,37 @@ void StateProcessor::extract_safe_moves(int32_t* memory_map_out, bool* safe_move
           evaluations[move_idx].is_enemy_tail = enemy_tail_grid.get(target_idx);
 
           if (evaluations[move_idx].is_accessible) {
-            // Reset search state.
-            std::fill_n(reached_mask, CELLS_COUNT, 0);
-            int queue_start = 0;
-            int queue_end = 0;
-
             // Initialize spatial search.
             int initial_food = food_grid.get(target_idx) ? 1 : 0;
-            queue[queue_end++] = {{next_x, next_y}, initial_food, 1, full_depth_mask};
-            reached_mask[target_idx] = full_depth_mask;
             int reachable_counts[DEPTH_LEVELS];
             std::fill_n(reachable_counts, DEPTH_LEVELS, 1);
 
             // Detect tail chase.
             bool can_tail_chase = player_body_grid.get(target_idx);
+            bool delayed_search = false;
+            uint16_t delayed_mask = 0;
+            uint16_t delayed_tail_mask = 0;
+            int delayed_search_end = 0;
+            std::vector<uint16_t> delayed_reached;
+            std::vector<Bitboard> delayed_paths;
 
             // Calculate accessible space.
-            while (queue_start < queue_end) {
-              uint16_t active_search_mask = full_depth_mask;
+            int queue_start;
+          retry_delayed_search:
+            std::fill_n(reached_mask, CELLS_COUNT, 0);
+            queue.clear();
+            queue.push_back({{next_x, next_y}, initial_food, 1, delayed_search ? delayed_mask : full_depth_mask});
+            reached_mask[target_idx] = full_depth_mask;
+            queue_start = 0;
+
+            if (delayed_search) {
+              delayed_paths.clear();
+              delayed_paths.emplace_back();
+              delayed_paths.back().set(target_idx);
+            }
+
+            while (queue_start < static_cast<int>(queue.size()) && (!delayed_search || delayed_tail_mask != delayed_mask)) {
+              uint16_t active_search_mask = delayed_search ? delayed_mask : full_depth_mask;
 
               // Satisfy depth requirements.
               for (int depth = 0; depth < DEPTH_LEVELS; ++depth) {
@@ -661,7 +673,8 @@ void StateProcessor::extract_safe_moves(int32_t* memory_map_out, bool* safe_move
                 break;
               }
 
-              const SearchState current = queue[queue_start++];
+              const int current_index = queue_start++;
+              const SearchState current = queue[current_index];
 
               // Explore neighbors.
               for (int neighbor_dir = 0; neighbor_dir < 4; ++neighbor_dir) {
@@ -670,6 +683,10 @@ void StateProcessor::extract_safe_moves(int32_t* memory_map_out, bool* safe_move
 
                 if (static_cast<unsigned>(neighbor_x) < U_BOARD_SIZE && static_cast<unsigned>(neighbor_y) < U_BOARD_SIZE) {
                   const int neighbor_idx = neighbor_y * BOARD_SIZE + neighbor_x;
+
+                  if (delayed_search && delayed_paths[current_index].get(neighbor_idx)) {
+                    continue;
+                  }
 
                   // Calculate segment expiration.
                   int effective_clear_time = clear_time_grid[neighbor_idx];
@@ -701,34 +718,74 @@ void StateProcessor::extract_safe_moves(int32_t* memory_map_out, bool* safe_move
                     }
 
                     // Count new space.
-                    const uint16_t new_bits = next_mask & ~reached_mask[neighbor_idx];
+                    if (delayed_search && my_arrival > delayed_search_end) {
+                      continue;
+                    }
+
+                    uint16_t& reached = delayed_search ? delayed_reached[my_arrival * CELLS_COUNT + neighbor_idx] : reached_mask[neighbor_idx];
+                    const uint16_t new_bits = next_mask & ~reached;
 
                     if (new_bits > 0) {
-                      reached_mask[neighbor_idx] |= new_bits;
+                      reached |= new_bits;
 
-                      for (int depth = 0; depth < DEPTH_LEVELS; ++depth) {
-                        if (new_bits & (1 << depth)) {
-                          reachable_counts[depth]++;
+                      if (!delayed_search) {
+                        for (int depth = 0; depth < DEPTH_LEVELS; ++depth) {
+                          if (new_bits & (1 << depth)) {
+                            reachable_counts[depth]++;
+                          }
                         }
                       }
 
                       // Detect tail chase.
                       if (player_body_grid.get(neighbor_idx)) {
+                        if (delayed_search) {
+                          delayed_tail_mask |= new_bits;
+                          continue;
+                        }
+
                         can_tail_chase = true;
                       }
 
                       const int next_food_count = current.food_eaten + (food_grid.get(neighbor_idx) ? 1 : 0);
-                      queue[queue_end++] = {{neighbor_x, neighbor_y}, next_food_count, my_arrival, next_mask};
+                      queue.push_back({{neighbor_x, neighbor_y}, next_food_count, my_arrival, next_mask});
+
+                      if (delayed_search) {
+                        delayed_paths.push_back(delayed_paths[current_index]);
+                        delayed_paths.back().set(neighbor_idx);
+                      }
                     }
                   }
                 }
               }
             }
 
+            if (!delayed_search && !can_tail_chase) {
+              int food_count = 0;
+
+              for (int depth = 0; depth < DEPTH_LEVELS; ++depth) {
+                if (reachable_counts[depth] < my_length) {
+                  delayed_mask |= (1 << depth);
+                }
+              }
+
+              for (int cell_index = 0; cell_index < CELLS_COUNT; ++cell_index) {
+                food_count += food_grid.get(cell_index) ? 1 : 0;
+              }
+
+              if (delayed_mask != 0) {
+                delayed_search = true;
+                delayed_search_end = my_length + food_count + 1;
+                delayed_reached.assign((delayed_search_end + 1) * CELLS_COUNT, 0);
+                delayed_reached[CELLS_COUNT + target_idx] = delayed_mask;
+                goto retry_delayed_search;
+              }
+            }
+
             // Store evaluation results.
             for (int depth = 0; depth < DEPTH_LEVELS; ++depth) {
               evaluations[move_idx].reachable_count[depth] = reachable_counts[depth];
-              evaluations[move_idx].is_space_sufficient[depth] = (reachable_counts[depth] >= my_length || can_tail_chase);
+              evaluations[move_idx].is_space_sufficient[depth] =
+                  (reachable_counts[depth] >= my_length || can_tail_chase || (delayed_tail_mask & (1 << depth)));
             }
           }
         }
