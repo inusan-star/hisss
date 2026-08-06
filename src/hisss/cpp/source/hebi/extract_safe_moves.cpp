@@ -15,9 +15,7 @@ static constexpr int CELLS_COUNT = BOARD_SIZE * BOARD_SIZE;
 static constexpr int MIN_TACTICAL_FALLBACK_LENGTH = 15;
 static constexpr int MIN_SURVIVAL_SPACE_DIFFERENCE = 5;
 
-static inline bool may_be_longer_than_player(const hebi::Snake& snake) {
-  return (snake.name == "9") || (snake.name == "32") || (snake.name == "45") || (snake.name == "61");
-}
+static inline bool may_be_longer_than_player(const hebi::Snake& snake) { return snake.name == "32"; }
 
 // Prediction configuration.
 static constexpr int MAX_PREDICTION_DEPTH = 5;
@@ -1125,8 +1123,8 @@ void StateProcessor::extract_safe_moves(int32_t* memory_map_out, bool* safe_move
         } else if (survival_found) {
           // Apply survival choices.
           for (int move_idx = 0; move_idx < 4; ++move_idx) {
-            safe_moves_out[move_idx] = cand_survival[move_idx] &&
-                                       max_survival_space - evaluations[move_idx].reachable_count[0] < MIN_SURVIVAL_SPACE_DIFFERENCE;
+            safe_moves_out[move_idx] =
+                cand_survival[move_idx] && max_survival_space - evaluations[move_idx].reachable_count[0] < MIN_SURVIVAL_SPACE_DIFFERENCE;
           }
         } else {
           // Apply despair choices.
