@@ -13,9 +13,14 @@ static constexpr unsigned U_BOARD_SIZE = static_cast<unsigned>(BOARD_SIZE);
 static constexpr int VIEW_RADIUS = 5;
 static constexpr int CELLS_COUNT = BOARD_SIZE * BOARD_SIZE;
 
-// Prediction configuration.
-static constexpr int MAX_PREDICTION_DEPTH = 3;
+// Utility functions.
+static inline bool shorter_player(const hebi::Snake& snake) { return (snake.name == "17") || (snake.name == "21") || (snake.name == "36"); }
+static inline bool longer_player(const hebi::Snake& snake) { return snake.name == "32"; }
+
+// Logical constants.
+static constexpr int MAX_PREDICTION_DEPTH = 5;
 static constexpr int DEPTH_LEVELS = MAX_PREDICTION_DEPTH + 1;
+static constexpr int MIN_HEAD_TO_HEAD_LENGTH = 10;
 
 // Spatial grid.
 struct alignas(32) Bitboard {
@@ -60,6 +65,12 @@ struct SearchState {
   int current_step;
   uint16_t path_mask;
 };
+struct EscapeSearchState {
+  hebi::Point position;
+  int food_eaten;
+  int current_step;
+  int parent_index;
+};
 
 // Move evaluation.
 struct MoveEvaluation {
@@ -91,6 +102,7 @@ void StateProcessor::extract_safe_moves(int32_t* memory_map_out, bool* safe_move
     Bitboard food_grid;
     Bitboard player_body_grid;
     Bitboard enemy_head_grid;
+    Bitboard longer_enemy_head_grid;
     Bitboard enemy_tail_grid;
     Bitboard obstacles;
     alignas(32) int clear_time_grid[CELLS_COUNT] = {0};
@@ -151,7 +163,7 @@ void StateProcessor::extract_safe_moves(int32_t* memory_map_out, bool* safe_move
         const int effective_enemy_length = snake.length + ((memory_map_out[enemy_head_flat] & (1 << 16)) ? 1 : 0);
         const bool is_disadvantaged = (effective_enemy_length >= game_state_.you.length);
 
-        if (has_null_segment || is_disadvantaged) {
+        if ((has_null_segment || is_disadvantaged) && !(game_state_.you.length >= MIN_HEAD_TO_HEAD_LENGTH && shorter_player(snake))) {
           const auto add_enemy_head_grid = [&](int direction) __attribute__((always_inline)) {
             const int adjacent_head_x = enemy_head.x + hebi::dx(static_cast<hebi::Direction>(direction));
             const int adjacent_head_y = enemy_head.y + hebi::dy(static_cast<hebi::Direction>(direction));
@@ -159,8 +171,12 @@ void StateProcessor::extract_safe_moves(int32_t* memory_map_out, bool* safe_move
             if (static_cast<unsigned>(adjacent_head_x) < U_BOARD_SIZE && static_cast<unsigned>(adjacent_head_y) < U_BOARD_SIZE) {
               const int adj_flat_index = adjacent_head_y * BOARD_SIZE + adjacent_head_x;
 
-              if (!player_body_grid.get(adj_flat_index)) {
+              if (!player_body_grid.get(adj_flat_index) || longer_player(snake)) {
                 enemy_head_grid.set(adj_flat_index);
+
+                if (longer_player(snake)) {
+                  longer_enemy_head_grid.set(adj_flat_index);
+                }
               }
             }
           };
@@ -511,6 +527,8 @@ void StateProcessor::extract_safe_moves(int32_t* memory_map_out, bool* safe_move
       }
     }
 
+    const Bitboard fixed_obstacles = obstacles;
+
     // Map player body for obstacles.
     {
       const auto& you = game_state_.you;
@@ -644,7 +662,7 @@ void StateProcessor::extract_safe_moves(int32_t* memory_map_out, bool* safe_move
             std::fill_n(reachable_counts, DEPTH_LEVELS, 1);
 
             // Detect tail chase.
-            bool can_tail_chase = player_body_grid.get(target_idx);
+            uint16_t tail_chase_mask = player_body_grid.get(target_idx) ? full_depth_mask : 0;
 
             // Calculate accessible space.
             while (queue_start < queue_end) {
@@ -714,7 +732,7 @@ void StateProcessor::extract_safe_moves(int32_t* memory_map_out, bool* safe_move
 
                       // Detect tail chase.
                       if (player_body_grid.get(neighbor_idx)) {
-                        can_tail_chase = true;
+                        tail_chase_mask |= new_bits;
                       }
 
                       const int next_food_count = current.food_eaten + (food_grid.get(neighbor_idx) ? 1 : 0);
@@ -728,7 +746,7 @@ void StateProcessor::extract_safe_moves(int32_t* memory_map_out, bool* safe_move
             // Store evaluation results.
             for (int depth = 0; depth < DEPTH_LEVELS; ++depth) {
               evaluations[move_idx].reachable_count[depth] = reachable_counts[depth];
-              evaluations[move_idx].is_space_sufficient[depth] = (reachable_counts[depth] >= my_length || can_tail_chase);
+              evaluations[move_idx].is_space_sufficient[depth] = (reachable_counts[depth] >= my_length || (tail_chase_mask & (1 << depth)));
             }
           }
         }
@@ -742,7 +760,9 @@ void StateProcessor::extract_safe_moves(int32_t* memory_map_out, bool* safe_move
       bool cand_depth[DEPTH_LEVELS][4] = {{false}};
 
       bool risky_found = false;
+      bool h2h_found = false;
       bool cand_risky[4] = {false};
+      bool cand_h2h[4] = {false};
 
       bool survival_found = false;
       bool cand_survival[4] = {false};
@@ -768,6 +788,15 @@ void StateProcessor::extract_safe_moves(int32_t* memory_map_out, bool* safe_move
         cand_risky[move_idx] = (!head_safe && eval.is_space_sufficient[0]) || eval.is_enemy_tail;
         risky_found |= cand_risky[move_idx];
 
+        if (cand_risky[move_idx]) {
+          const int next_x = head.x + hebi::dx(static_cast<hebi::Direction>(move_idx));
+          const int next_y = head.y + hebi::dy(static_cast<hebi::Direction>(move_idx));
+          const int target_idx = next_y * BOARD_SIZE + next_x;
+
+          cand_h2h[move_idx] = !eval.is_enemy_tail && !longer_enemy_head_grid.get(target_idx);
+          h2h_found |= cand_h2h[move_idx];
+        }
+
         // Evaluate survival choices.
         cand_survival[move_idx] = (eval.reachable_count[0] > 0);
         survival_found |= cand_survival[move_idx];
@@ -789,20 +818,203 @@ void StateProcessor::extract_safe_moves(int32_t* memory_map_out, bool* safe_move
 
       // Process alternative choices.
       if (!selected) {
-        if (risky_found) {
-          // Apply risky choices.
+        if (h2h_found) {
+          // Apply head-to-head choices.
           for (int move_idx = 0; move_idx < 4; ++move_idx) {
-            safe_moves_out[move_idx] = cand_risky[move_idx];
+            safe_moves_out[move_idx] = cand_h2h[move_idx];
           }
-        } else if (survival_found) {
-          // Apply survival choices.
+
+          selected = true;
+        }
+
+        const bool recheck_escape = !selected && (risky_found || survival_found);
+
+        if (recheck_escape) {
+          bool escape_found = false;
+          bool cand_escape[4] = {false};
+
+          const int escape_length = game_state_.you.length;
+          const int escape_search_end = escape_length + CELLS_COUNT;
+
           for (int move_idx = 0; move_idx < 4; ++move_idx) {
-            safe_moves_out[move_idx] = cand_survival[move_idx];
+            const auto& eval = evaluations[move_idx];
+
+            // Check recoverable choices.
+            if (!eval.is_accessible || eval.is_enemy_head || eval.is_enemy_tail) {
+              continue;
+            }
+
+            const int next_x = head.x + hebi::dx(static_cast<hebi::Direction>(move_idx));
+            const int next_y = head.y + hebi::dy(static_cast<hebi::Direction>(move_idx));
+            const int target_idx = next_y * BOARD_SIZE + next_x;
+            const int initial_food = food_grid.get(target_idx) ? 1 : 0;
+
+            std::vector<EscapeSearchState> escape_queue;
+            escape_queue.reserve(CELLS_COUNT * 2);
+
+            std::vector<int> escape_reached((escape_search_end + 1) * CELLS_COUNT, CELLS_COUNT + 1);
+
+            escape_queue.push_back({{next_x, next_y}, initial_food, 1, -1});
+            escape_reached[CELLS_COUNT + target_idx] = initial_food;
+
+            int escape_queue_start = 0;
+
+            while (escape_queue_start < static_cast<int>(escape_queue.size()) && !cand_escape[move_idx]) {
+              const int current_index = escape_queue_start++;
+              const EscapeSearchState current = escape_queue[current_index];
+              const int current_length = escape_length + current.food_eaten;
+
+              // Reconstruct current body.
+              Bitboard self_body;
+              Bitboard consumed_food;
+
+              for (int cell_index = 0; cell_index < CELLS_COUNT; ++cell_index) {
+                if (player_body_grid.get(cell_index) && current.current_step < std::max(1, clear_time_grid[cell_index]) + current.food_eaten) {
+                  self_body.set(cell_index);
+                }
+              }
+
+              int trace_index = current_index;
+              int body_segments = current_length;
+
+              while (trace_index >= 0) {
+                const hebi::Point trace_position = escape_queue[trace_index].position;
+                const int trace_flat = trace_position.y * BOARD_SIZE + trace_position.x;
+
+                if (body_segments-- > 0) {
+                  self_body.set(trace_flat);
+                }
+
+                if (food_grid.get(trace_flat)) {
+                  consumed_food.set(trace_flat);
+                }
+
+                trace_index = escape_queue[trace_index].parent_index;
+              }
+
+              // Check available space.
+              Bitboard space_visited;
+              int space_queue[CELLS_COUNT];
+              int space_queue_start = 0;
+              int space_queue_end = 0;
+              int space_count = 1;
+
+              const int current_flat = current.position.y * BOARD_SIZE + current.position.x;
+              space_queue[space_queue_end++] = current_flat;
+              space_visited.set(current_flat);
+
+              while (space_queue_start < space_queue_end && space_count < current_length) {
+                const int search_flat = space_queue[space_queue_start++];
+                const int search_x = search_flat % BOARD_SIZE;
+                const int search_y = search_flat / BOARD_SIZE;
+
+                for (int direction = 0; direction < 4; ++direction) {
+                  const int neighbor_x = search_x + hebi::dx(static_cast<hebi::Direction>(direction));
+                  const int neighbor_y = search_y + hebi::dy(static_cast<hebi::Direction>(direction));
+
+                  if (static_cast<unsigned>(neighbor_x) < U_BOARD_SIZE && static_cast<unsigned>(neighbor_y) < U_BOARD_SIZE) {
+                    const int neighbor_idx = neighbor_y * BOARD_SIZE + neighbor_x;
+                    const bool unconsumed_food = food_grid.get(neighbor_idx) && !consumed_food.get(neighbor_idx);
+
+                    if (!space_visited.get(neighbor_idx) && !fixed_obstacles.get(neighbor_idx) && !unconsumed_food && !self_body.get(neighbor_idx)) {
+                      space_visited.set(neighbor_idx);
+                      space_queue[space_queue_end++] = neighbor_idx;
+                      space_count++;
+                    }
+                  }
+                }
+              }
+
+              if (space_count >= current_length) {
+                cand_escape[move_idx] = true;
+                escape_found = true;
+                continue;
+              }
+
+              if (current.current_step >= current_length) {
+                continue;
+              }
+
+              // Explore future moves.
+              for (int direction = 0; direction < 4; ++direction) {
+                const int neighbor_x = current.position.x + hebi::dx(static_cast<hebi::Direction>(direction));
+                const int neighbor_y = current.position.y + hebi::dy(static_cast<hebi::Direction>(direction));
+
+                if (static_cast<unsigned>(neighbor_x) < U_BOARD_SIZE && static_cast<unsigned>(neighbor_y) < U_BOARD_SIZE) {
+                  const int neighbor_idx = neighbor_y * BOARD_SIZE + neighbor_x;
+
+                  // Treat opponents as fixed obstacles.
+                  if (fixed_obstacles.get(neighbor_idx)) {
+                    continue;
+                  }
+
+                  const bool food_eaten = food_grid.get(neighbor_idx) && !consumed_food.get(neighbor_idx);
+                  const int next_food_count = current.food_eaten + (food_eaten ? 1 : 0);
+                  const int next_step = current.current_step + 1;
+
+                  // Check original body expiration.
+                  if (player_body_grid.get(neighbor_idx) && next_step < std::max(1, clear_time_grid[neighbor_idx]) + current.food_eaten) {
+                    continue;
+                  }
+
+                  // Check newly created body.
+                  bool self_collision = false;
+                  int retained_segments = current_length - (food_eaten ? 0 : 1);
+                  int body_trace_index = current_index;
+
+                  while (body_trace_index >= 0 && retained_segments-- > 0) {
+                    const hebi::Point body_trace_position = escape_queue[body_trace_index].position;
+
+                    if (body_trace_position.x == neighbor_x && body_trace_position.y == neighbor_y) {
+                      self_collision = true;
+                      break;
+                    }
+
+                    body_trace_index = escape_queue[body_trace_index].parent_index;
+                  }
+
+                  if (self_collision) {
+                    continue;
+                  }
+
+                  const int reached_idx = next_step * CELLS_COUNT + neighbor_idx;
+
+                  if (next_food_count >= escape_reached[reached_idx]) {
+                    continue;
+                  }
+
+                  escape_reached[reached_idx] = next_food_count;
+                  escape_queue.push_back({{neighbor_x, neighbor_y}, next_food_count, next_step, current_index});
+                }
+              }
+            }
           }
-        } else {
-          // Apply despair choices.
-          for (int move_idx = 0; move_idx < 4; ++move_idx) {
-            safe_moves_out[move_idx] = true;
+
+          if (escape_found) {
+            for (int move_idx = 0; move_idx < 4; ++move_idx) {
+              safe_moves_out[move_idx] = cand_escape[move_idx];
+            }
+
+            selected = true;
+          }
+        }
+
+        if (!selected) {
+          if (risky_found) {
+            // Apply risky choices.
+            for (int move_idx = 0; move_idx < 4; ++move_idx) {
+              safe_moves_out[move_idx] = cand_risky[move_idx];
+            }
+          } else if (survival_found) {
+            // Apply survival choices.
+            for (int move_idx = 0; move_idx < 4; ++move_idx) {
+              safe_moves_out[move_idx] = cand_survival[move_idx];
+            }
+          } else {
+            // Apply despair choices.
+            for (int move_idx = 0; move_idx < 4; ++move_idx) {
+              safe_moves_out[move_idx] = true;
+            }
           }
         }
       }
