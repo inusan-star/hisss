@@ -12,13 +12,9 @@ static constexpr int BOARD_SIZE = 15;
 static constexpr unsigned U_BOARD_SIZE = static_cast<unsigned>(BOARD_SIZE);
 static constexpr int VIEW_RADIUS = 5;
 static constexpr int CELLS_COUNT = BOARD_SIZE * BOARD_SIZE;
-static constexpr int MIN_TACTICAL_FALLBACK_LENGTH = 15;
-static constexpr int MIN_SURVIVAL_SPACE_DIFFERENCE = 5;
-
-static inline bool may_be_longer_than_player(const hebi::Snake& snake) { return snake.name == "32"; }
 
 // Prediction configuration.
-static constexpr int MAX_PREDICTION_DEPTH = 5;
+static constexpr int MAX_PREDICTION_DEPTH = 3;
 static constexpr int DEPTH_LEVELS = MAX_PREDICTION_DEPTH + 1;
 
 // Spatial grid.
@@ -27,9 +23,6 @@ struct alignas(32) Bitboard {
 
   inline void set(int flat_idx) { blocks[flat_idx >> 6] |= (1ULL << (flat_idx & 63)); }
   inline bool get(int flat_idx) const { return (blocks[flat_idx >> 6] & (1ULL << (flat_idx & 63))) != 0; }
-  inline bool is_subset_of(const Bitboard& other) const {
-    return ((blocks[0] & ~other.blocks[0]) | (blocks[1] & ~other.blocks[1]) | (blocks[2] & ~other.blocks[2]) | (blocks[3] & ~other.blocks[3])) == 0;
-  }
 };
 
 // Distance maps.
@@ -98,9 +91,6 @@ void StateProcessor::extract_safe_moves(int32_t* memory_map_out, bool* safe_move
     Bitboard food_grid;
     Bitboard player_body_grid;
     Bitboard enemy_head_grid;
-    Bitboard may_be_longer_enemy_head_grid;
-    Bitboard dangerous_enemy_head_grid;
-    Bitboard contestable_enemy_head_grid;
     Bitboard enemy_tail_grid;
     Bitboard obstacles;
     alignas(32) int clear_time_grid[CELLS_COUNT] = {0};
@@ -160,11 +150,6 @@ void StateProcessor::extract_safe_moves(int32_t* memory_map_out, bool* safe_move
 
         const int effective_enemy_length = snake.length + ((memory_map_out[enemy_head_flat] & (1 << 16)) ? 1 : 0);
         const bool is_disadvantaged = (effective_enemy_length >= game_state_.you.length);
-        const bool may_be_longer = may_be_longer_than_player(snake);
-
-        if (has_null_segment) {
-          dangerous_enemy_head_grid.set(enemy_head_flat);
-        }
 
         if (has_null_segment || is_disadvantaged) {
           const auto add_enemy_head_grid = [&](int direction) __attribute__((always_inline)) {
@@ -174,16 +159,8 @@ void StateProcessor::extract_safe_moves(int32_t* memory_map_out, bool* safe_move
             if (static_cast<unsigned>(adjacent_head_x) < U_BOARD_SIZE && static_cast<unsigned>(adjacent_head_y) < U_BOARD_SIZE) {
               const int adj_flat_index = adjacent_head_y * BOARD_SIZE + adjacent_head_x;
 
-              if (!player_body_grid.get(adj_flat_index) || may_be_longer) {
+              if (!player_body_grid.get(adj_flat_index)) {
                 enemy_head_grid.set(adj_flat_index);
-              }
-
-              if (may_be_longer) {
-                may_be_longer_enemy_head_grid.set(adj_flat_index);
-              }
-
-              if (has_null_segment && !may_be_longer && !player_body_grid.get(adj_flat_index)) {
-                contestable_enemy_head_grid.set(adj_flat_index);
               }
             }
           };
@@ -626,8 +603,7 @@ void StateProcessor::extract_safe_moves(int32_t* memory_map_out, bool* safe_move
       const int my_length = game_state_.you.length;
       const uint16_t full_depth_mask = static_cast<uint16_t>((1 << DEPTH_LEVELS) - 1);
       alignas(32) uint16_t reached_mask[CELLS_COUNT] = {0};
-      std::vector<SearchState> queue;
-      queue.reserve(CELLS_COUNT * DEPTH_LEVELS);
+      SearchState queue[CELLS_COUNT * DEPTH_LEVELS];
 
       // Reset evaluations.
       for (int move_idx = 0; move_idx < 4; ++move_idx) {
@@ -654,80 +630,25 @@ void StateProcessor::extract_safe_moves(int32_t* memory_map_out, bool* safe_move
           evaluations[move_idx].is_enemy_head = enemy_head_grid.get(target_idx);
           evaluations[move_idx].is_enemy_tail = enemy_tail_grid.get(target_idx);
 
-          // Evaluate space sufficiency.
           if (evaluations[move_idx].is_accessible) {
-            int initial_food = food_grid.get(target_idx) ? 1 : 0;
-
-            if (!evaluations[move_idx].is_enemy_head) {
-              bool has_next_move = false;
-              bool only_may_be_longer_head_moves = true;
-
-              for (int next_dir = 0; next_dir < 4; ++next_dir) {
-                const int next_move_x = next_x + hebi::dx(static_cast<hebi::Direction>(next_dir));
-                const int next_move_y = next_y + hebi::dy(static_cast<hebi::Direction>(next_dir));
-
-                if (static_cast<unsigned>(next_move_x) < U_BOARD_SIZE && static_cast<unsigned>(next_move_y) < U_BOARD_SIZE) {
-                  const int next_move_idx = next_move_y * BOARD_SIZE + next_move_x;
-                  const int effective_clear_time = clear_time_grid[next_move_idx] + ((initial_food && player_body_grid.get(next_move_idx)) ? 1 : 0);
-
-                  if (2 >= effective_clear_time) {
-                    has_next_move = true;
-
-                    if (!may_be_longer_enemy_head_grid.get(next_move_idx)) {
-                      only_may_be_longer_head_moves = false;
-                      break;
-                    }
-                  }
-                }
-              }
-
-              evaluations[move_idx].is_enemy_head = has_next_move && only_may_be_longer_head_moves;
-            }
+            // Reset search state.
+            std::fill_n(reached_mask, CELLS_COUNT, 0);
+            int queue_start = 0;
+            int queue_end = 0;
 
             // Initialize spatial search.
+            int initial_food = food_grid.get(target_idx) ? 1 : 0;
+            queue[queue_end++] = {{next_x, next_y}, initial_food, 1, full_depth_mask};
+            reached_mask[target_idx] = full_depth_mask;
             int reachable_counts[DEPTH_LEVELS];
             std::fill_n(reachable_counts, DEPTH_LEVELS, 1);
 
             // Detect tail chase.
-            uint16_t tail_chase_mask = player_body_grid.get(target_idx) ? full_depth_mask : 0;
-            bool delayed_search = false;
-            uint16_t delayed_mask = 0;
-            uint16_t delayed_tail_mask = 0;
-            int delayed_search_end = 0;
-            bool exact_delayed_search = false;
-            std::vector<uint16_t> delayed_reached;
-            std::vector<Bitboard> delayed_paths;
-            std::vector<std::vector<int>> delayed_states;
-            std::vector<int> delayed_stack;
+            bool can_tail_chase = player_body_grid.get(target_idx);
 
             // Calculate accessible space.
-            int queue_start;
-          retry_delayed_search:
-            std::fill_n(reached_mask, CELLS_COUNT, 0);
-            queue.clear();
-            queue.push_back(SearchState{
-                {next_x, next_y},
-                initial_food,
-                1,
-                static_cast<uint16_t>(exact_delayed_search ? delayed_mask & ~delayed_tail_mask : (delayed_search ? delayed_mask : full_depth_mask))});
-            reached_mask[target_idx] = full_depth_mask;
-            queue_start = 0;
-
-            if (delayed_search) {
-              delayed_paths.clear();
-              delayed_paths.emplace_back();
-              delayed_paths.back().set(target_idx);
-
-              if (exact_delayed_search) {
-                delayed_stack.push_back(0);
-                delayed_states[CELLS_COUNT + target_idx].push_back(0);
-              }
-            }
-
-            while ((exact_delayed_search ? !delayed_stack.empty() : queue_start < static_cast<int>(queue.size())) &&
-                   (!delayed_search || delayed_tail_mask != delayed_mask)) {
-              uint16_t active_search_mask =
-                  exact_delayed_search ? delayed_mask & ~delayed_tail_mask : (delayed_search ? delayed_mask : full_depth_mask);
+            while (queue_start < queue_end) {
+              uint16_t active_search_mask = full_depth_mask;
 
               // Satisfy depth requirements.
               for (int depth = 0; depth < DEPTH_LEVELS; ++depth) {
@@ -740,26 +661,15 @@ void StateProcessor::extract_safe_moves(int32_t* memory_map_out, bool* safe_move
                 break;
               }
 
-              const int current_index = exact_delayed_search ? delayed_stack.back() : queue_start++;
-
-              if (exact_delayed_search) {
-                delayed_stack.pop_back();
-              }
-
-              const SearchState current = queue[current_index];
+              const SearchState current = queue[queue_start++];
 
               // Explore neighbors.
               for (int neighbor_dir = 0; neighbor_dir < 4; ++neighbor_dir) {
-                const int search_dir = exact_delayed_search ? 3 - neighbor_dir : neighbor_dir;
-                const int neighbor_x = current.position.x + hebi::dx(static_cast<hebi::Direction>(search_dir));
-                const int neighbor_y = current.position.y + hebi::dy(static_cast<hebi::Direction>(search_dir));
+                const int neighbor_x = current.position.x + hebi::dx(static_cast<hebi::Direction>(neighbor_dir));
+                const int neighbor_y = current.position.y + hebi::dy(static_cast<hebi::Direction>(neighbor_dir));
 
                 if (static_cast<unsigned>(neighbor_x) < U_BOARD_SIZE && static_cast<unsigned>(neighbor_y) < U_BOARD_SIZE) {
                   const int neighbor_idx = neighbor_y * BOARD_SIZE + neighbor_x;
-
-                  if (delayed_search && delayed_paths[current_index].get(neighbor_idx)) {
-                    continue;
-                  }
 
                   // Calculate segment expiration.
                   int effective_clear_time = clear_time_grid[neighbor_idx];
@@ -791,106 +701,34 @@ void StateProcessor::extract_safe_moves(int32_t* memory_map_out, bool* safe_move
                     }
 
                     // Count new space.
-                    if (delayed_search && my_arrival > delayed_search_end) {
-                      continue;
-                    }
-
-                    uint16_t new_bits = next_mask;
-                    Bitboard next_path;
-                    const bool possible_food = food_grid.get(neighbor_idx) || (delayed_search && (memory_map_out[neighbor_idx] & (1 << 16)));
-                    const int next_food_count = current.food_eaten + (possible_food ? 1 : 0);
-
-                    if (exact_delayed_search) {
-                      if (player_body_grid.get(neighbor_idx)) {
-                        delayed_tail_mask |= new_bits;
-                        continue;
-                      }
-
-                      next_path = delayed_paths[current_index];
-                      next_path.set(neighbor_idx);
-
-                      for (const int state_index : delayed_states[my_arrival * CELLS_COUNT + neighbor_idx]) {
-                        if (queue[state_index].food_eaten <= next_food_count && delayed_paths[state_index].is_subset_of(next_path)) {
-                          new_bits &= ~queue[state_index].path_mask;
-                        }
-                      }
-                    } else {
-                      uint16_t& reached = delayed_search ? delayed_reached[my_arrival * CELLS_COUNT + neighbor_idx] : reached_mask[neighbor_idx];
-                      new_bits &= ~reached;
-                      reached |= new_bits;
-                    }
+                    const uint16_t new_bits = next_mask & ~reached_mask[neighbor_idx];
 
                     if (new_bits > 0) {
-                      if (!delayed_search) {
-                        for (int depth = 0; depth < DEPTH_LEVELS; ++depth) {
-                          if (new_bits & (1 << depth)) {
-                            reachable_counts[depth]++;
-                          }
+                      reached_mask[neighbor_idx] |= new_bits;
+
+                      for (int depth = 0; depth < DEPTH_LEVELS; ++depth) {
+                        if (new_bits & (1 << depth)) {
+                          reachable_counts[depth]++;
                         }
                       }
 
                       // Detect tail chase.
                       if (player_body_grid.get(neighbor_idx)) {
-                        if (delayed_search) {
-                          delayed_tail_mask |= new_bits;
-                          continue;
-                        }
-
-                        tail_chase_mask |= new_bits;
+                        can_tail_chase = true;
                       }
 
-                      queue.push_back({{neighbor_x, neighbor_y}, next_food_count, my_arrival, exact_delayed_search ? new_bits : next_mask});
-
-                      if (delayed_search) {
-                        if (exact_delayed_search) {
-                          delayed_paths.push_back(next_path);
-                          const int state_index = static_cast<int>(queue.size()) - 1;
-                          delayed_states[my_arrival * CELLS_COUNT + neighbor_idx].push_back(state_index);
-                          delayed_stack.push_back(state_index);
-                        } else {
-                          delayed_paths.push_back(delayed_paths[current_index]);
-                          delayed_paths.back().set(neighbor_idx);
-                        }
-                      }
+                      const int next_food_count = current.food_eaten + (food_grid.get(neighbor_idx) ? 1 : 0);
+                      queue[queue_end++] = {{neighbor_x, neighbor_y}, next_food_count, my_arrival, next_mask};
                     }
                   }
                 }
               }
             }
 
-            if (delayed_search && !exact_delayed_search && (delayed_mask & 1) && !(delayed_tail_mask & 1)) {
-              exact_delayed_search = true;
-              delayed_states.assign((delayed_search_end + 1) * CELLS_COUNT, {});
-              goto retry_delayed_search;
-            }
-
-            if (!delayed_search) {
-              for (int depth = 0; depth < DEPTH_LEVELS; ++depth) {
-                if (reachable_counts[depth] < my_length && !(tail_chase_mask & (1 << depth))) {
-                  delayed_mask |= (1 << depth);
-                }
-              }
-
-              if (delayed_mask != 0) {
-                int food_count = 0;
-
-                for (int cell_index = 0; cell_index < CELLS_COUNT; ++cell_index) {
-                  food_count += (food_grid.get(cell_index) || (memory_map_out[cell_index] & (1 << 16))) ? 1 : 0;
-                }
-
-                delayed_search = true;
-                delayed_search_end = my_length + food_count + 1;
-                delayed_reached.assign((delayed_search_end + 1) * CELLS_COUNT, 0);
-                delayed_reached[CELLS_COUNT + target_idx] = delayed_mask;
-                goto retry_delayed_search;
-              }
-            }
-
             // Store evaluation results.
             for (int depth = 0; depth < DEPTH_LEVELS; ++depth) {
               evaluations[move_idx].reachable_count[depth] = reachable_counts[depth];
-              evaluations[move_idx].is_space_sufficient[depth] =
-                  (reachable_counts[depth] >= my_length || (tail_chase_mask & (1 << depth)) || (delayed_tail_mask & (1 << depth)));
+              evaluations[move_idx].is_space_sufficient[depth] = (reachable_counts[depth] >= my_length || can_tail_chase);
             }
           }
         }
@@ -908,7 +746,6 @@ void StateProcessor::extract_safe_moves(int32_t* memory_map_out, bool* safe_move
 
       bool survival_found = false;
       bool cand_survival[4] = {false};
-      int max_survival_space = 0;
 
       // Evaluate move candidates.
       for (int move_idx = 0; move_idx < 4; ++move_idx) {
@@ -934,7 +771,6 @@ void StateProcessor::extract_safe_moves(int32_t* memory_map_out, bool* safe_move
         // Evaluate survival choices.
         cand_survival[move_idx] = (eval.reachable_count[0] > 0);
         survival_found |= cand_survival[move_idx];
-        max_survival_space = std::max(max_survival_space, eval.reachable_count[0]);
       }
 
       bool selected = false;
@@ -944,168 +780,6 @@ void StateProcessor::extract_safe_moves(int32_t* memory_map_out, bool* safe_move
         if (depth_found[depth]) {
           for (int move_idx = 0; move_idx < 4; ++move_idx) {
             safe_moves_out[move_idx] = cand_depth[depth][move_idx];
-          }
-
-          // Protect shortest tail paths from enemy entry.
-          if (game_state_.you.length >= MIN_TACTICAL_FALLBACK_LENGTH) {
-            const auto& tail = game_state_.you.body.back();
-
-            if (tail.has_value()) {
-              const hebi::Point tail_pos = tail.value();
-
-              if (static_cast<unsigned>(tail_pos.x) < U_BOARD_SIZE && static_cast<unsigned>(tail_pos.y) < U_BOARD_SIZE) {
-                const int tail_flat = tail_pos.y * BOARD_SIZE + tail_pos.x;
-                const int tail_manhattan_distance = LUTS.distance[head_flat][tail_flat];
-
-                if (tail_manhattan_distance > 0 && tail_manhattan_distance <= VIEW_RADIUS * 2) {
-                  uint8_t rejected_head_mask = 0;
-
-                  for (int move_idx = 0; move_idx < 4; ++move_idx) {
-                    const auto& eval = evaluations[move_idx];
-                    const int next_x = head.x + hebi::dx(static_cast<hebi::Direction>(move_idx));
-                    const int next_y = head.y + hebi::dy(static_cast<hebi::Direction>(move_idx));
-
-                    if (eval.is_accessible && eval.is_enemy_head && eval.is_space_sufficient[depth] &&
-                        contestable_enemy_head_grid.get(next_y * BOARD_SIZE + next_x)) {
-                      rejected_head_mask |= (1 << move_idx);
-                    }
-                  }
-
-                  if (rejected_head_mask != 0) {
-                    alignas(32) int tail_distance[CELLS_COUNT];
-                    int tail_queue[CELLS_COUNT];
-                    int tail_queue_start = 0;
-                    int tail_queue_end = 0;
-                    int shortest_distance = (tail_manhattan_distance == 1) ? 0 : 9999;
-
-                    std::fill_n(tail_distance, CELLS_COUNT, -1);
-                    tail_distance[tail_flat] = 0;
-                    tail_queue[tail_queue_end++] = tail_flat;
-
-                    while (tail_queue_start < tail_queue_end) {
-                      const int current_flat = tail_queue[tail_queue_start++];
-
-                      if (tail_distance[current_flat] >= shortest_distance) {
-                        break;
-                      }
-
-                      const int current_x = current_flat % BOARD_SIZE;
-                      const int current_y = current_flat / BOARD_SIZE;
-
-                      for (int direction = 0; direction < 4; ++direction) {
-                        const int neighbor_x = current_x + hebi::dx(static_cast<hebi::Direction>(direction));
-                        const int neighbor_y = current_y + hebi::dy(static_cast<hebi::Direction>(direction));
-
-                        if (static_cast<unsigned>(neighbor_x) < U_BOARD_SIZE && static_cast<unsigned>(neighbor_y) < U_BOARD_SIZE) {
-                          const int neighbor_flat = neighbor_y * BOARD_SIZE + neighbor_x;
-
-                          if (tail_distance[neighbor_flat] == -1 && !player_body_grid.get(neighbor_flat)) {
-                            tail_distance[neighbor_flat] = tail_distance[current_flat] + 1;
-                            tail_queue[tail_queue_end++] = neighbor_flat;
-
-                            if (LUTS.distance[head_flat][neighbor_flat] == 1) {
-                              shortest_distance = tail_distance[neighbor_flat];
-                            }
-                          }
-                        }
-                      }
-                    }
-
-                    uint8_t forced_tail_mask = 0;
-
-                    for (int move_idx = 0; move_idx < 4; ++move_idx) {
-                      const int next_x = head.x + hebi::dx(static_cast<hebi::Direction>(move_idx));
-                      const int next_y = head.y + hebi::dy(static_cast<hebi::Direction>(move_idx));
-
-                      if ((rejected_head_mask & (1 << move_idx)) && tail_distance[next_y * BOARD_SIZE + next_x] == shortest_distance) {
-                        forced_tail_mask |= (1 << move_idx);
-                      }
-                    }
-
-                    if (forced_tail_mask != 0) {
-                      for (int move_idx = 0; move_idx < 4; ++move_idx) {
-                        safe_moves_out[move_idx] = (forced_tail_mask & (1 << move_idx)) != 0;
-                      }
-                    }
-                  }
-                }
-              }
-            }
-          }
-
-          // Force a head-to-head against a trapped enemy.
-          if (game_state_.you.length >= MIN_TACTICAL_FALLBACK_LENGTH) {
-            uint8_t rejected_head_mask = 0;
-
-            for (int move_idx = 0; move_idx < 4; ++move_idx) {
-              const auto& eval = evaluations[move_idx];
-
-              if (eval.is_accessible && eval.is_enemy_head && eval.is_space_sufficient[0]) {
-                rejected_head_mask |= (1 << move_idx);
-              }
-            }
-
-            int forced_h2h_move = -1;
-
-            for (const auto& snake : game_state_.board.snakes) {
-              if (rejected_head_mask == 0 || forced_h2h_move != -1 || snake.id == game_state_.you.id || snake.elimination_event.has_value() ||
-                  snake.body.empty() || !snake.body.front().has_value() || may_be_longer_than_player(snake)) {
-                continue;
-              }
-
-              const hebi::Point enemy_head = snake.body.front().value();
-
-              if (static_cast<unsigned>(enemy_head.x) >= U_BOARD_SIZE || static_cast<unsigned>(enemy_head.y) >= U_BOARD_SIZE) {
-                continue;
-              }
-
-              const int enemy_head_flat = enemy_head.y * BOARD_SIZE + enemy_head.x;
-
-              if (!dangerous_enemy_head_grid.get(enemy_head_flat)) {
-                continue;
-              }
-
-              int forced_target_flat = -1;
-              int available_move_count = 0;
-
-              for (int direction = 0; direction < 4; ++direction) {
-                const int next_x = enemy_head.x + hebi::dx(static_cast<hebi::Direction>(direction));
-                const int next_y = enemy_head.y + hebi::dy(static_cast<hebi::Direction>(direction));
-
-                if (static_cast<unsigned>(next_x) < U_BOARD_SIZE && static_cast<unsigned>(next_y) < U_BOARD_SIZE) {
-                  const int next_flat = next_y * BOARD_SIZE + next_x;
-
-                  if (clear_time_grid[next_flat] <= 1) {
-                    forced_target_flat = next_flat;
-                    available_move_count++;
-
-                    if (available_move_count > 1) {
-                      break;
-                    }
-                  }
-                }
-              }
-
-              if (available_move_count == 1) {
-                for (int move_idx = 0; move_idx < 4; ++move_idx) {
-                  const int next_x = head.x + hebi::dx(static_cast<hebi::Direction>(move_idx));
-                  const int next_y = head.y + hebi::dy(static_cast<hebi::Direction>(move_idx));
-
-                  if ((rejected_head_mask & (1 << move_idx)) && next_y * BOARD_SIZE + next_x == forced_target_flat) {
-                    forced_h2h_move = move_idx;
-                    break;
-                  }
-                }
-              }
-            }
-
-            if (forced_h2h_move != -1) {
-              safe_moves_out[0] = false;
-              safe_moves_out[1] = false;
-              safe_moves_out[2] = false;
-              safe_moves_out[3] = false;
-              safe_moves_out[forced_h2h_move] = true;
-            }
           }
 
           selected = true;
@@ -1123,152 +797,13 @@ void StateProcessor::extract_safe_moves(int32_t* memory_map_out, bool* safe_move
         } else if (survival_found) {
           // Apply survival choices.
           for (int move_idx = 0; move_idx < 4; ++move_idx) {
-            safe_moves_out[move_idx] =
-                cand_survival[move_idx] && max_survival_space - evaluations[move_idx].reachable_count[0] < MIN_SURVIVAL_SPACE_DIFFERENCE;
+            safe_moves_out[move_idx] = cand_survival[move_idx];
           }
         } else {
           // Apply despair choices.
           for (int move_idx = 0; move_idx < 4; ++move_idx) {
             safe_moves_out[move_idx] = true;
           }
-        }
-      }
-    }
-
-    // Prefer a uniquely forcing two-turn tactic.
-    {
-      uint16_t safe_mask = 0;
-
-      for (int move = 0; move < 4; ++move) {
-        if (safe_moves_out[move] && evaluations[move].is_accessible && !evaluations[move].is_enemy_head) {
-          safe_mask |= static_cast<uint16_t>(1 << move);
-        }
-      }
-
-      if ((safe_mask & (safe_mask - 1)) != 0) {
-        const auto advance = [](const hebi::Point& p, int move) __attribute__((always_inline)) {
-          const auto direction = static_cast<hebi::Direction>(move);
-          return hebi::Point{p.x + hebi::dx(direction), p.y + hebi::dy(direction)};
-        };
-        const auto inside = [](const hebi::Point& p) __attribute__((always_inline)) {
-          return static_cast<unsigned>(p.x) < U_BOARD_SIZE && static_cast<unsigned>(p.y) < U_BOARD_SIZE;
-        };
-        const auto flat = [](const hebi::Point& p) __attribute__((always_inline)) { return p.y * BOARD_SIZE + p.x; };
-        const auto open = [&](const hebi::Point& p, int arrival, int food, const Bitboard& trail, bool player) __attribute__((always_inline)) {
-          if (!inside(p) || trail.get(flat(p))) return false;
-          const int cell = flat(p);
-          const int clear_time = clear_time_grid[cell] + (player && player_body_grid.get(cell) ? food : 0);
-          return arrival >= clear_time;
-        };
-        const auto has_exit = [&](const hebi::Point& p, int arrival, int food, const Bitboard& trail, bool player) __attribute__((always_inline)) {
-          for (int move = 0; move < 4; ++move) {
-            const hebi::Point next = advance(p, move);
-            if (open(next, arrival, food, trail, player) && (!player || enemy_reach_time[flat(next)] > arrival)) return true;
-          }
-
-          return false;
-        };
-
-        struct Target {
-          hebi::Point head;
-          int length;
-        };
-        Target targets[4];
-        int target_count = 0;
-
-        for (const auto& snake : game_state_.board.snakes) {
-          if (snake.id == game_state_.you.id || snake.elimination_event.has_value() || !snake.body.front().has_value()) continue;
-          const hebi::Point enemy_head = snake.body.front().value();
-          if (!inside(enemy_head) || LUTS.distance[head_flat][flat(enemy_head)] > 5) continue;
-
-          int enemy_length = snake.length;
-
-          for (const auto& segment : snake.body) {
-            if (!segment.has_value()) {
-              enemy_length = CELLS_COUNT;
-              break;
-            }
-          }
-
-          if (target_count < 4) targets[target_count++] = Target{enemy_head, enemy_length};
-        }
-
-        const Bitboard empty_trail;
-        const auto forces_target = [&](const Target& target, const hebi::Point& player_first, int player_food_first,
-                                       int player_length_first) __attribute__((always_inline)) {
-          for (int enemy_first_move = 0; enemy_first_move < 4; ++enemy_first_move) {
-            const hebi::Point enemy_first = advance(target.head, enemy_first_move);
-            if (!open(enemy_first, 1, 0, empty_trail, false)) continue;
-
-            const int enemy_first_cell = flat(enemy_first);
-            const int enemy_food_first = food_grid.get(enemy_first_cell) ? 1 : 0;
-            const int enemy_length_first = target.length + enemy_food_first;
-
-            if (enemy_first.x == player_first.x && enemy_first.y == player_first.y) {
-              if (player_length_first <= enemy_length_first) return false;
-              continue;
-            }
-
-            Bitboard first_trail;
-            first_trail.set(flat(player_first));
-            first_trail.set(enemy_first_cell);
-            bool safe_reply = false;
-
-            for (int player_second_move = 0; player_second_move < 4 && !safe_reply; ++player_second_move) {
-              const hebi::Point player_second = advance(player_first, player_second_move);
-              if (!open(player_second, 2, player_food_first, first_trail, true) || enemy_reach_time[flat(player_second)] <= 2) continue;
-
-              const int player_second_cell = flat(player_second);
-              const int player_food_second = player_food_first + (food_grid.get(player_second_cell) ? 1 : 0);
-              const int player_length_second = game_state_.you.length + player_food_second;
-              bool forces = true;
-
-              for (int enemy_second_move = 0; enemy_second_move < 4 && forces; ++enemy_second_move) {
-                const hebi::Point enemy_second = advance(enemy_first, enemy_second_move);
-                if (!open(enemy_second, 2, 0, first_trail, false)) continue;
-
-                const int enemy_second_cell = flat(enemy_second);
-                const int enemy_length_second = target.length + enemy_food_first + (food_grid.get(enemy_second_cell) ? 1 : 0);
-
-                if (enemy_second.x == player_second.x && enemy_second.y == player_second.y) {
-                  if (player_length_second <= enemy_length_second) forces = false;
-                  continue;
-                }
-
-                Bitboard second_trail = first_trail;
-                second_trail.set(player_second_cell);
-                second_trail.set(enemy_second_cell);
-                forces = !has_exit(enemy_second, 3, 0, second_trail, false) && has_exit(player_second, 3, player_food_second, second_trail, true);
-              }
-
-              safe_reply = forces;
-            }
-
-            if (!safe_reply) return false;
-          }
-
-          return true;
-        };
-
-        uint16_t forcing_mask = 0;
-
-        for (int move = 0; move < 4 && target_count > 0; ++move) {
-          if (!(safe_mask & (1 << move))) continue;
-          const hebi::Point player_first = advance(head, move);
-          const int player_first_cell = flat(player_first);
-          const int player_food_first = food_grid.get(player_first_cell) ? 1 : 0;
-          const int player_length_first = game_state_.you.length + player_food_first;
-
-          for (int target = 0; target < target_count; ++target) {
-            if (forces_target(targets[target], player_first, player_food_first, player_length_first)) {
-              forcing_mask |= static_cast<uint16_t>(1 << move);
-              break;
-            }
-          }
-        }
-
-        if (forcing_mask != 0 && forcing_mask != safe_mask) {
-          for (int move = 0; move < 4; ++move) safe_moves_out[move] = (forcing_mask & (1 << move)) != 0;
         }
       }
     }
