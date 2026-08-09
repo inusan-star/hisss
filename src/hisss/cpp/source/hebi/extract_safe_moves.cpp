@@ -14,16 +14,15 @@ static constexpr int VIEW_RADIUS = 5;
 static constexpr int CELLS_COUNT = BOARD_SIZE * BOARD_SIZE;
 
 // Utility functions.
-static inline bool shorter_player(const hebi::Snake& snake) { return (snake.name == "17") || (snake.name == "21") || (snake.name == "36"); }
+static inline bool shorter_player(const hebi::Snake& snake) {
+  return (snake.name == "17") || (snake.name == "21") || (snake.name == "24") || (snake.name == "36");
+}
 static inline bool longer_player(const hebi::Snake& snake) { return snake.name == "32"; }
 
 // Logical constants.
 static constexpr int MAX_PREDICTION_DEPTH = 5;
 static constexpr int DEPTH_LEVELS = MAX_PREDICTION_DEPTH + 1;
 static constexpr int MIN_HEAD_TO_HEAD_LENGTH = 10;
-static constexpr int MAX_MOVING_TAIL_DISTANCE = 2;
-static constexpr int MAX_COIL_TAIL_DISTANCE = 6;
-static constexpr int COIL_ENEMY_DISTANCE = 2;
 
 // Spatial grid.
 struct alignas(32) Bitboard {
@@ -105,11 +104,10 @@ void StateProcessor::extract_safe_moves(int32_t* memory_map_out, bool* safe_move
     Bitboard food_grid;
     Bitboard player_body_grid;
     Bitboard enemy_head_grid;
-    Bitboard shorter_enemy_head_grid;
+    Bitboard shorter_enemy_heads;
     Bitboard longer_enemy_head_grid;
     Bitboard enemy_tail_grid;
     Bitboard obstacles;
-    bool longer_enemy_nearby = false;
     alignas(32) int clear_time_grid[CELLS_COUNT] = {0};
 
     // Map food items.
@@ -170,7 +168,9 @@ void StateProcessor::extract_safe_moves(int32_t* memory_map_out, bool* safe_move
         const bool is_shorter_player = (game_state_.you.length >= MIN_HEAD_TO_HEAD_LENGTH && shorter_player(snake));
         const bool is_diagonal_shorter_player = is_shorter_player && std::abs(enemy_head.x - head.x) == 1 && std::abs(enemy_head.y - head.y) == 1;
 
-        longer_enemy_nearby |= longer_player(snake) && LUTS.distance[head_flat][enemy_head_flat] == COIL_ENEMY_DISTANCE;
+        if (is_diagonal_shorter_player) {
+          shorter_enemy_heads.set(enemy_head_flat);
+        }
 
         if (has_null_segment || is_disadvantaged || is_diagonal_shorter_player) {
           const auto add_enemy_head_grid = [&](int direction) __attribute__((always_inline)) {
@@ -180,9 +180,7 @@ void StateProcessor::extract_safe_moves(int32_t* memory_map_out, bool* safe_move
             if (static_cast<unsigned>(adjacent_head_x) < U_BOARD_SIZE && static_cast<unsigned>(adjacent_head_y) < U_BOARD_SIZE) {
               const int adj_flat_index = adjacent_head_y * BOARD_SIZE + adjacent_head_x;
 
-              if (is_diagonal_shorter_player) {
-                shorter_enemy_head_grid.set(adj_flat_index);
-              } else if (!is_shorter_player && (!player_body_grid.get(adj_flat_index) || longer_player(snake))) {
+              if (!is_shorter_player && (!player_body_grid.get(adj_flat_index) || longer_player(snake))) {
                 enemy_head_grid.set(adj_flat_index);
 
                 if (longer_player(snake)) {
@@ -1033,48 +1031,76 @@ void StateProcessor::extract_safe_moves(int32_t* memory_map_out, bool* safe_move
       // Check for tail chase optimization.
       const int selected_count = safe_moves_out[0] + safe_moves_out[1] + safe_moves_out[2] + safe_moves_out[3];
 
-      if (selected_count == 1 && game_state_.you.body.back().has_value()) {
+      if (selected_count == 1 && game_state_.you.body.back().has_value() &&
+          (shorter_enemy_heads.blocks[0] | shorter_enemy_heads.blocks[1] | shorter_enemy_heads.blocks[2] | shorter_enemy_heads.blocks[3]) != 0) {
         const int selected_move = safe_moves_out[0] ? 0 : (safe_moves_out[1] ? 1 : (safe_moves_out[2] ? 2 : 3));
         const hebi::Point tail = game_state_.you.body.back().value();
         const int tail_flat = tail.y * BOARD_SIZE + tail.x;
-        const int tail_distance = LUTS.distance[head_flat][tail_flat];
-        const int max_tail_distance = clear_time_grid[tail_flat] > 0 ? VIEW_RADIUS : MAX_MOVING_TAIL_DISTANCE;
 
-        if (tail_distance <= max_tail_distance) {
+        alignas(32) uint8_t tail_distances[CELLS_COUNT];
+        std::fill_n(tail_distances, CELLS_COUNT, static_cast<uint8_t>(VIEW_RADIUS + 1));
+        int distance_queue[CELLS_COUNT];
+        int distance_queue_start = 0;
+        int distance_queue_end = 0;
+
+        tail_distances[tail_flat] = 0;
+        distance_queue[distance_queue_end++] = tail_flat;
+
+        while (distance_queue_start < distance_queue_end) {
+          const int current_flat = distance_queue[distance_queue_start++];
+          const int current_distance = tail_distances[current_flat];
+
+          if (current_distance >= VIEW_RADIUS) {
+            continue;
+          }
+
+          const int current_x = current_flat % BOARD_SIZE;
+          const int current_y = current_flat / BOARD_SIZE;
+
+          for (int direction = 0; direction < 4; ++direction) {
+            const int neighbor_x = current_x + hebi::dx(static_cast<hebi::Direction>(direction));
+            const int neighbor_y = current_y + hebi::dy(static_cast<hebi::Direction>(direction));
+
+            if (static_cast<unsigned>(neighbor_x) < U_BOARD_SIZE && static_cast<unsigned>(neighbor_y) < U_BOARD_SIZE) {
+              const int neighbor_flat = neighbor_y * BOARD_SIZE + neighbor_x;
+              const int next_distance = current_distance + 1;
+              const bool is_head = neighbor_flat == head_flat || shorter_enemy_heads.get(neighbor_flat);
+
+              if (next_distance < tail_distances[neighbor_flat] && (!obstacles.get(neighbor_flat) || is_head)) {
+                tail_distances[neighbor_flat] = static_cast<uint8_t>(next_distance);
+
+                if (!is_head) {
+                  distance_queue[distance_queue_end++] = neighbor_flat;
+                }
+              }
+            }
+          }
+        }
+
+        const int tail_distance = tail_distances[head_flat];
+
+        if (tail_distance <= VIEW_RADIUS) {
           const int tail_move = (selected_move + 2) & 3;
           const int target_idx =
               (head.y + hebi::dy(static_cast<hebi::Direction>(tail_move))) * BOARD_SIZE + head.x + hebi::dx(static_cast<hebi::Direction>(tail_move));
           const auto& eval = evaluations[tail_move];
 
           if (eval.is_accessible && !eval.is_enemy_head && !eval.is_enemy_tail && eval.is_space_sufficient[0] &&
-              shorter_enemy_head_grid.get(target_idx) && LUTS.distance[target_idx][tail_flat] < tail_distance) {
-            safe_moves_out[selected_move] = false;
-            safe_moves_out[tail_move] = true;
-          }
-        }
-      }
+              tail_distances[target_idx] < tail_distance) {
+            for (int direction = 0; direction < 4; ++direction) {
+              const int enemy_x = target_idx % BOARD_SIZE + hebi::dx(static_cast<hebi::Direction>(direction));
+              const int enemy_y = target_idx / BOARD_SIZE + hebi::dy(static_cast<hebi::Direction>(direction));
 
-      if (selected_count == 1 && longer_enemy_nearby && game_state_.you.body.back().has_value()) {
-        const int selected_move = safe_moves_out[0] ? 0 : (safe_moves_out[1] ? 1 : (safe_moves_out[2] ? 2 : 3));
-        int max_coil_space = evaluations[selected_move].reachable_count[MAX_PREDICTION_DEPTH];
-        const hebi::Point tail = game_state_.you.body.back().value();
-        const int tail_flat = tail.y * BOARD_SIZE + tail.x;
-        const int tail_distance = LUTS.distance[head_flat][tail_flat];
+              if (static_cast<unsigned>(enemy_x) < U_BOARD_SIZE && static_cast<unsigned>(enemy_y) < U_BOARD_SIZE) {
+                const int enemy_flat = enemy_y * BOARD_SIZE + enemy_x;
 
-        for (int move_idx = 0; move_idx < 4; ++move_idx) {
-          const auto& eval = evaluations[move_idx];
-
-          if (eval.is_accessible && !eval.is_enemy_head && !eval.is_enemy_tail) {
-            max_coil_space = std::max(max_coil_space, eval.reachable_count[MAX_PREDICTION_DEPTH]);
-          }
-        }
-
-        if (max_coil_space > evaluations[selected_move].reachable_count[MAX_PREDICTION_DEPTH] && max_coil_space >= MIN_HEAD_TO_HEAD_LENGTH &&
-            max_coil_space * 2 <= game_state_.you.length && tail_distance > MAX_MOVING_TAIL_DISTANCE && tail_distance <= MAX_COIL_TAIL_DISTANCE) {
-          for (int move_idx = 0; move_idx < 4; ++move_idx) {
-            const auto& eval = evaluations[move_idx];
-            safe_moves_out[move_idx] =
-                eval.is_accessible && !eval.is_enemy_head && !eval.is_enemy_tail && eval.reachable_count[MAX_PREDICTION_DEPTH] == max_coil_space;
+                if (shorter_enemy_heads.get(enemy_flat) && tail_distances[enemy_flat] >= tail_distance) {
+                  safe_moves_out[selected_move] = false;
+                  safe_moves_out[tail_move] = true;
+                  break;
+                }
+              }
+            }
           }
         }
       }
