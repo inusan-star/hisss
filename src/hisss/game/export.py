@@ -5,7 +5,6 @@ import numpy as np
 
 from hisss.game.battlesnake import BattleSnakeGame
 
-
 _SNAKE_COLORS = [
     (255, 0, 0),
     (0, 255, 0),
@@ -34,9 +33,7 @@ def _map_name(cfg) -> str:
     return "standard"
 
 
-def to_battlesnake_json(
-    game: BattleSnakeGame, player: int, include_eliminated: bool = False
-) -> str:
+def to_battlesnake_json(game: BattleSnakeGame, player: int, include_eliminated: bool = False, ignore_fog: bool = False) -> str:
     """Serialize a BattleSnakeGame state to a Battlesnake API-compatible JSON string.
 
     Args:
@@ -44,6 +41,7 @@ def to_battlesnake_json(
         player: Zero-based index of the player whose perspective to use as ``"you"``.
         include_eliminated: When ``True``, dead snakes are included in
             ``board.snakes`` with an ``"elimination"`` key describing how they died.
+        ignore_fog: When ``True``, bypasses view radius restrictions to output full board state.
 
     Returns:
         JSON string matching the Battlesnake API ``/move`` request body format.
@@ -56,8 +54,9 @@ def to_battlesnake_json(
 
     cfg = game.cfg
     view_radius = cfg.view_radius
+    apply_fog = (view_radius is not None) and (not ignore_fog)
 
-    if view_radius is not None:
+    if apply_fog:
         ph = game.player_pos(player)
         player_hx, player_hy = int(ph[0][0]), int(ph[0][1])
 
@@ -105,7 +104,7 @@ def to_battlesnake_json(
     }
 
     food_arr = game.food_pos()  # shape (n, 2), rows are [x, y]
-    if view_radius is not None:
+    if apply_fog:
         spawn_turns = game.food_spawn_turns()
         food_list = [
             {"x": int(row[0]), "y": int(row[1]), "spawn_turn": int(spawn_turns[i])}
@@ -114,10 +113,7 @@ def to_battlesnake_json(
         ]
     else:
         spawn_turns = game.food_spawn_turns()
-        food_list = [
-            {"x": int(row[0]), "y": int(row[1]), "spawn_turn": int(spawn_turns[i])}
-            for i, row in enumerate(food_arr)
-        ]
+        food_list = [{"x": int(row[0]), "y": int(row[1]), "spawn_turn": int(spawn_turns[i])} for i, row in enumerate(food_arr)]
 
     hazard_arr = game.get_hazards()
     hazard_coords = np.argwhere(hazard_arr)
@@ -125,11 +121,7 @@ def to_battlesnake_json(
 
     healths = game.player_healths()
     lengths = game.player_lengths()
-    _state = (
-        game.get_state()
-        if (include_eliminated or not game.is_player_alive(player))
-        else None
-    )
+    _state = game.get_state() if (include_eliminated or not game.is_player_alive(player)) else None
 
     def _make_snake(p: int, force: bool = False) -> dict | None:
         is_alive = game.is_player_alive(p)
@@ -155,11 +147,7 @@ def to_battlesnake_json(
                     "tail": "default",
                 },
             }
-            if (
-                _state is not None
-                and _state.elimination_events
-                and p in _state.elimination_events
-            ):
+            if _state is not None and _state.elimination_events and p in _state.elimination_events:
                 ev = _state.elimination_events[p]
                 snake_dict["elimination"] = {
                     "cause": ev.cause,
@@ -168,7 +156,7 @@ def to_battlesnake_json(
                 }
             return snake_dict
         body_coords = game.player_pos(p)
-        if view_radius is None or p == player:
+        if not apply_fog or p == player:
             body_list = [{"x": int(x), "y": int(y)} for x, y in body_coords]
             health = int(healths[p])
             length = int(lengths[p])
@@ -196,9 +184,7 @@ def to_battlesnake_json(
             },
         }
 
-    snakes_list = [
-        s for p in range(game.num_players) for s in [_make_snake(p)] if s is not None
-    ]
+    snakes_list = [s for p in range(game.num_players) for s in [_make_snake(p)] if s is not None]
 
     board_section = {
         "height": int(cfg.h),

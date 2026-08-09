@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.15)
 project(hisss_link CXX)
 
-set(CMAKE_CXX_STANDARD 11)
+set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 if(MSVC)
@@ -23,6 +23,12 @@ set(PROJECT_SOURCES
     source/utils.cpp
     source/nash.cpp
     source/link.cpp
+    source/hebi/classical.cpp
+    source/hebi/processor.cpp
+    source/hebi/extract_safe_moves.cpp
+    source/hebi/encode_policy_features.cpp
+    source/hebi/encode_value_features.cpp
+    source/hebi/pbrs.cpp
 )
 
 add_library(link SHARED ${PROJECT_SOURCES} ${ALGLIB_SOURCES})

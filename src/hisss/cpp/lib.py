@@ -73,9 +73,7 @@ class CPPLibrary:
         self.lib.actions_cpp.argtypes = [
             ct.POINTER(Struct),
             ct.c_int,
-            np.ctypeslib.ndpointer(
-                dtype=ct.c_int, ndim=1, shape=(4,), flags="C_CONTIGUOUS"
-            ),
+            np.ctypeslib.ndpointer(dtype=ct.c_int, ndim=1, shape=(4,), flags="C_CONTIGUOUS"),
         ]
         self.lib.equals_cpp.argtypes = [
             ct.POINTER(Struct),
@@ -199,6 +197,45 @@ class CPPLibrary:
             ct.POINTER(ct.c_int8),
         ]
 
+        self.lib.create_classical_agent_cpp.argtypes = []
+        self.lib.create_classical_agent_cpp.restype = ct.c_void_p
+
+        self.lib.destroy_classical_agent_cpp.argtypes = [ct.c_void_p]
+        self.lib.destroy_classical_agent_cpp.restype = None
+
+        self.lib.start_classical_agent_cpp.argtypes = [ct.c_void_p, ct.c_char_p]
+        self.lib.start_classical_agent_cpp.restype = None
+
+        self.lib.move_classical_agent_cpp.argtypes = [ct.c_void_p, ct.c_char_p]
+        self.lib.move_classical_agent_cpp.restype = ct.c_int
+
+        self.lib.end_classical_agent_cpp.argtypes = [ct.c_void_p, ct.c_char_p]
+        self.lib.end_classical_agent_cpp.restype = None
+
+        self.lib.get_board_size_cpp.argtypes = []
+        self.lib.get_board_size_cpp.restype = ct.c_int
+
+        self.lib.process_state_cpp.argtypes = [
+            ct.POINTER(ct.c_int32),
+            ct.c_char_p,
+            ct.c_char_p,
+            ct.POINTER(ct.c_bool),
+            ct.POINTER(ct.c_float),
+            ct.POINTER(ct.c_float),
+        ]
+        self.lib.process_state_cpp.restype = None
+
+        self.lib.compute_pbrs_cpp.argtypes = [
+            ct.c_int,
+            np.ctypeslib.ndpointer(dtype=np.int32, ndim=1, flags="C_CONTIGUOUS"),
+            np.ctypeslib.ndpointer(dtype=np.int32, ndim=1, flags="C_CONTIGUOUS"),
+            np.ctypeslib.ndpointer(dtype=np.int32, ndim=1, flags="C_CONTIGUOUS"),
+            np.ctypeslib.ndpointer(dtype=bool, ndim=1, flags="C_CONTIGUOUS"),
+            np.ctypeslib.ndpointer(dtype=bool, ndim=1, flags="C_CONTIGUOUS"),
+            np.ctypeslib.ndpointer(dtype=np.float32, ndim=1, flags="C_CONTIGUOUS"),
+        ]
+        self.lib.compute_pbrs_cpp.restype = None
+
     def get_area_control(
         self,
         num_snakes: int,
@@ -245,33 +282,23 @@ class CPPLibrary:
 
     def compute_nash(
         self,
-        available_actions: list[
-            list[int]
-        ],  # maps player(index of player_at_turn) to available actions
+        available_actions: list[list[int]],  # maps player(index of player_at_turn) to available actions
         joint_action_list: list[tuple[int, ...]],
         joint_action_value_arr: np.ndarray,  # shape (num_joint_actions, num_player_at_turn)
         error_counter=None,  # mp.Array
     ) -> tuple[list[float], list[np.ndarray]]:
         # number of players and actions
         num_player = len(available_actions)
-        num_available_actions = np.asarray(
-            [len(available_actions[p]) for p in range(num_player)], dtype=ct.c_int
-        )
-        num_available_actions_p = num_available_actions.ctypes.data_as(
-            ct.POINTER(ct.c_int)
-        )
+        num_available_actions = np.asarray([len(available_actions[p]) for p in range(num_player)], dtype=ct.c_int)
+        num_available_actions_p = num_available_actions.ctypes.data_as(ct.POINTER(ct.c_int))
         # available actions
         flat_action_list = [a for sublist in available_actions for a in sublist]
         available_actions_arr = np.asarray(flat_action_list, dtype=ct.c_int)
         available_actions_p = available_actions_arr.ctypes.data_as(ct.POINTER(ct.c_int))
         joint_actions_arr = np.asarray(joint_action_list, dtype=ct.c_int).flatten()
         joint_actions_p = joint_actions_arr.ctypes.data_as(ct.POINTER(ct.c_int))
-        joint_action_value_arr_flat = joint_action_value_arr.astype(
-            ct.c_double
-        ).flatten()
-        joint_action_value_p = joint_action_value_arr_flat.ctypes.data_as(
-            ct.POINTER(ct.c_double)
-        )
+        joint_action_value_arr_flat = joint_action_value_arr.astype(ct.c_double).flatten()
+        joint_action_value_p = joint_action_value_arr_flat.ctypes.data_as(ct.POINTER(ct.c_double))
         # result arrays
         result_values = np.zeros(shape=(num_player,), dtype=ct.c_double)
         result_values_p = result_values.ctypes.data_as(ct.POINTER(ct.c_double))
@@ -297,9 +324,7 @@ class CPPLibrary:
             value_list = list(avg_values)
             result_policy_list = []
             for aa in available_actions:
-                result_policy_list.append(
-                    np.ones(shape=(len(aa),), dtype=ct.c_float) / len(aa)
-                )
+                result_policy_list.append(np.ones(shape=(len(aa),), dtype=ct.c_float) / len(aa))
         else:
             value_list = list(result_values)
             result_policy_list = []
@@ -309,6 +334,55 @@ class CPPLibrary:
                 result_policy_list.append(result_policies[start_idx:end_idx])
                 start_idx = end_idx
         return value_list, result_policy_list
+
+    def process_state(
+        self,
+        memory_map: np.ndarray,
+        partial_state_json: str,
+        perfect_state_json: str | None = None,
+        features_flag: bool = False,
+    ) -> np.ndarray | tuple[np.ndarray, np.ndarray] | tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Processes the game state."""
+        safe_moves_out = np.zeros(shape=(4,), dtype=bool)
+        safe_moves_p = safe_moves_out.ctypes.data_as(ct.POINTER(ct.c_bool))
+
+        policy_features_out = None
+        policy_features_p = None
+        value_features_out = None
+        value_features_p = None
+
+        if features_flag:
+            board_size = self.lib.get_board_size_cpp()
+            policy_features_out = np.zeros((69, board_size, board_size), dtype=np.float32)
+            policy_features_p = policy_features_out.ctypes.data_as(ct.POINTER(ct.c_float))
+
+            if perfect_state_json is not None:
+                value_features_out = np.zeros((85, board_size, board_size), dtype=np.float32)
+                value_features_p = value_features_out.ctypes.data_as(ct.POINTER(ct.c_float))
+
+        memory_map_p = memory_map.ctypes.data_as(ct.POINTER(ct.c_int32))
+        partial_state_encoded = partial_state_json.encode("utf-8")
+        perfect_state_encoded = perfect_state_json.encode("utf-8") if perfect_state_json is not None else None
+
+        self.lib.process_state_cpp(
+            memory_map_p,
+            partial_state_encoded,
+            perfect_state_encoded,
+            safe_moves_p,
+            policy_features_p,
+            value_features_p,
+        )
+
+        if features_flag:
+            assert policy_features_out is not None
+
+            if perfect_state_json is not None:
+                assert value_features_out is not None
+                return safe_moves_out, policy_features_out, value_features_out
+
+            return safe_moves_out, policy_features_out
+
+        return safe_moves_out
 
 
 CPP_LIB = CPPLibrary()
