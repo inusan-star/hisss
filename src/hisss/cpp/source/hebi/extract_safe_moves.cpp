@@ -23,6 +23,8 @@ static inline bool longer_player(const hebi::Snake& snake) { return snake.name =
 static constexpr int MAX_PREDICTION_DEPTH = 5;
 static constexpr int DEPTH_LEVELS = MAX_PREDICTION_DEPTH + 1;
 static constexpr int MIN_HEAD_TO_HEAD_LENGTH = 10;
+static constexpr int MAX_COIL_SELECTION_DEPTH = 3;
+static constexpr int MIN_COIL_SPACE = 10;
 
 // Spatial grid.
 struct alignas(32) Bitboard {
@@ -812,6 +814,7 @@ void StateProcessor::extract_safe_moves(int32_t* memory_map_out, bool* safe_move
       }
 
       bool selected = false;
+      int selected_depth = -1;
 
       // Process depth-based choices.
       for (int depth = MAX_PREDICTION_DEPTH; depth >= 0; --depth) {
@@ -821,6 +824,7 @@ void StateProcessor::extract_safe_moves(int32_t* memory_map_out, bool* safe_move
           }
 
           selected = true;
+          selected_depth = depth;
           break;
         }
       }
@@ -1024,6 +1028,45 @@ void StateProcessor::extract_safe_moves(int32_t* memory_map_out, bool* safe_move
             for (int move_idx = 0; move_idx < 4; ++move_idx) {
               safe_moves_out[move_idx] = true;
             }
+          }
+        }
+      }
+
+      // Check for head-to-head optimization.
+      const int depth_selected_count = safe_moves_out[0] + safe_moves_out[1] + safe_moves_out[2] + safe_moves_out[3];
+      const bool has_longer_enemy_head_candidates =
+          (longer_enemy_head_grid.blocks[0] | longer_enemy_head_grid.blocks[1] | longer_enemy_head_grid.blocks[2] |
+           longer_enemy_head_grid.blocks[3]) != 0;
+
+      if (depth_selected_count == 1 && selected_depth <= MAX_COIL_SELECTION_DEPTH && has_longer_enemy_head_candidates &&
+          game_state_.you.body.back().has_value()) {
+        const int selected_move = safe_moves_out[0] ? 0 : (safe_moves_out[1] ? 1 : (safe_moves_out[2] ? 2 : 3));
+        const hebi::Point tail = game_state_.you.body.back().value();
+        int max_self_space = evaluations[selected_move].reachable_count[MAX_PREDICTION_DEPTH];
+        bool longer_head_threat = false;
+
+        for (int move_idx = 0; move_idx < 4; ++move_idx) {
+          const int next_x = head.x + hebi::dx(static_cast<hebi::Direction>(move_idx));
+          const int next_y = head.y + hebi::dy(static_cast<hebi::Direction>(move_idx));
+
+          if (static_cast<unsigned>(next_x) < U_BOARD_SIZE && static_cast<unsigned>(next_y) < U_BOARD_SIZE) {
+            longer_head_threat |= longer_enemy_head_grid.get(next_y * BOARD_SIZE + next_x);
+          }
+
+          const auto& eval = evaluations[move_idx];
+
+          if (eval.is_accessible && !eval.is_enemy_head && !eval.is_enemy_tail) {
+            max_self_space = std::max(max_self_space, eval.reachable_count[MAX_PREDICTION_DEPTH]);
+          }
+        }
+
+        if (longer_head_threat && max_self_space > evaluations[selected_move].reachable_count[MAX_PREDICTION_DEPTH] &&
+            max_self_space >= MIN_COIL_SPACE && max_self_space * 2 <= game_state_.you.length &&
+            LUTS.distance[head_flat][tail.y * BOARD_SIZE + tail.x] <= MAX_PREDICTION_DEPTH + 1) {
+          for (int move_idx = 0; move_idx < 4; ++move_idx) {
+            const auto& eval = evaluations[move_idx];
+            safe_moves_out[move_idx] =
+                eval.is_accessible && !eval.is_enemy_head && !eval.is_enemy_tail && eval.reachable_count[MAX_PREDICTION_DEPTH] == max_self_space;
           }
         }
       }
