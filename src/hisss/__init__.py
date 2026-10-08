@@ -15,6 +15,11 @@ from hisss.game.rewards import (
     KillBattleSnakeRewardConfig,
     StandardBattleSnakeRewardConfig,
 )
+from hisss.game.seed import set_seed
+from hisss.game.processor import process_state
+from hisss.game.pbrs import compute_pbrs
+
+ACTION_TO_STR = {UP: "up", RIGHT: "right", DOWN: "down", LEFT: "left"}
 
 __all__ = [
     "duel_config",
@@ -34,4 +39,8 @@ __all__ = [
     "BattleSnakeEncodingConfig",
     "calculate_nash_equilibrium",
     "to_battlesnake_json",
+    "set_seed",
+    "process_state",
+    "compute_pbrs",
+    "ACTION_TO_STR",
 ]
